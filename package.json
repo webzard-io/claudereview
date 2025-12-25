@@ -1,0 +1,35 @@
+{
+  "name": "claudereview",
+  "version": "0.1.0",
+  "description": "Share Claude Code sessions for code review",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "ccshare": "./src/cli.ts"
+  },
+  "scripts": {
+    "dev": "bun run --watch src/server.ts",
+    "start": "bun run src/server.ts",
+    "cli": "bun run src/cli.ts",
+    "db:push": "drizzle-kit push",
+    "db:generate": "drizzle-kit generate",
+    "db:studio": "drizzle-kit studio"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "drizzle-kit": "^0.31.8"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.19.7",
+    "argon2": "^0.44.0",
+    "commander": "^14.0.2",
+    "drizzle-orm": "^0.45.1",
+    "hono": "^4.11.2",
+    "nanoid": "^5.1.6",
+    "postgres": "^3.4.7",
+    "zod": "^4.2.1"
+  }
+}
