@@ -36,11 +36,25 @@ ccshare export --last -o session.html
 
 ## Features
 
-- **Encrypted**: Sessions are encrypted before upload. Password-protected sessions use client-side key derivation.
-- **Public & Private Links**: Share openly or protect with a password.
-- **TUI Aesthetic**: Beautiful terminal-style viewer.
-- **Deep Linking**: Link directly to specific messages.
-- **Self-Contained**: Exported HTML works offline.
+### Security
+- **E2E Encrypted**: Sessions encrypted before upload with AES-256-GCM
+- **Key in URL Fragment**: Encryption key never sent to server (`#key=xxx`)
+- **Password Protection**: Optional PBKDF2-derived keys for private shares
+
+### Viewer
+- **TUI Aesthetic**: Beautiful terminal-style dark/light theme
+- **Search**: Full-text search with ⌘F
+- **Collapsible Outputs**: Expand/collapse tool results
+- **Syntax Highlighting**: Code blocks with language detection
+- **Diff View**: Visual diffs for file edits
+- **Key Moments**: Summary of files created/modified, commands run
+- **Git Context**: Links to repo, branch, and commit
+- **Deep Linking**: Link directly to specific messages
+- **Token Estimates**: Rough usage statistics
+
+### Export
+- **Self-Contained HTML**: Exported files work offline
+- **OG Meta Tags**: Rich previews when sharing links
 
 ## Claude Code Integration
 
@@ -53,11 +67,16 @@ Share sessions directly from Claude by adding to `~/.mcp.json`:
   "mcpServers": {
     "claudereview": {
       "command": "bunx",
-      "args": ["claudereview-mcp"]
+      "args": ["claudereview-mcp"],
+      "env": {
+        "CCSHARE_API_KEY": "your-api-key-here"
+      }
     }
   }
 }
 ```
+
+Get your API key from [claudereview.com/dashboard](https://claudereview.com/dashboard) after logging in with GitHub.
 
 Then just ask Claude: "Share this session" or "List my recent sessions".
 

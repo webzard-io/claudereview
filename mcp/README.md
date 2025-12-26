@@ -64,3 +64,19 @@ Once configured, just ask Claude:
 - "Share this session"
 - "List my recent sessions"
 - "Share session abc123 with title 'Bug fix review'"
+
+## Viewer Features
+
+Shared sessions include a full-featured viewer:
+
+- **Dark/Light Theme**: Toggle with button or system preference
+- **Search**: Full-text search with ⌘F
+- **Collapsible Outputs**: Expand/collapse tool results
+- **Syntax Highlighting**: Code blocks with language detection
+- **Diff View**: Visual diffs for Edit tool changes
+- **Key Moments**: Summary of files created/modified, commands run
+- **Git Context**: Links to repo, branch, and commit
+- **Clickable Tool Badges**: Jump to tool usage instances
+- **Token Estimates**: Rough usage statistics
+- **Deep Linking**: Link to specific messages with #msg-N
+- **OG Meta Tags**: Rich previews when sharing links
