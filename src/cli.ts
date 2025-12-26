@@ -235,7 +235,7 @@ program
       // Render session to full HTML with all features
       const renderedHtml = renderSessionToHtml(session, {
         theme: 'dark',
-        embed: true, // No chrome, just the content
+        embed: false, // Full experience with header, theme toggle, etc.
       });
 
       // Create payload with both rendered HTML and metadata

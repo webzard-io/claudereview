@@ -2556,20 +2556,37 @@ const VIEWER_SCRIPT = `
 
     // Check if this is the new format with pre-rendered HTML
     if (decrypted.html) {
-      // New format: use pre-rendered HTML directly
-      const session = decrypted.session;
+      // New format: Replace page content with pre-rendered HTML
+      // Parse the HTML and inject properly so scripts execute
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(decrypted.html, 'text/html');
 
-      document.getElementById('header').innerHTML = \`
-        <div class="header-main">
-          <div class="logo">
-            <span class="logo-icon">◈</span>
-            <a href="/" class="logo-text">claude<span class="accent">review</span></a>
-          </div>
-        </div>
-      \`;
+      // Copy theme attribute
+      const theme = doc.documentElement.getAttribute('data-theme');
+      if (theme) document.documentElement.setAttribute('data-theme', theme);
 
-      // Insert the pre-rendered HTML (it includes its own styles)
-      document.getElementById('messages').innerHTML = decrypted.html;
+      // Replace head content (styles)
+      const newStyles = doc.querySelectorAll('style');
+      document.head.innerHTML = doc.head.innerHTML;
+
+      // Replace body content
+      document.body.innerHTML = doc.body.innerHTML;
+      document.body.className = doc.body.className;
+
+      // Re-create script elements so they execute
+      const scripts = doc.querySelectorAll('script');
+      scripts.forEach(oldScript => {
+        const newScript = document.createElement('script');
+        if (oldScript.src) {
+          newScript.src = oldScript.src;
+        } else {
+          newScript.textContent = oldScript.textContent;
+        }
+        if (oldScript.type) newScript.type = oldScript.type;
+        if (oldScript.id) newScript.id = oldScript.id;
+        document.body.appendChild(newScript);
+      });
+      return;
     } else {
       // Legacy format: render from session data
       const session = decrypted;
