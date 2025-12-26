@@ -1415,16 +1415,20 @@ body {
 /* ========== Key Moments Summary ========== */
 .key-moments {
   margin-top: var(--space-4);
-  border: 1px solid var(--border-subtle);
+  margin-bottom: var(--space-4);
+  border: 1px solid var(--border-medium);
+  border-left: 3px solid var(--tool-accent);
   border-radius: var(--radius-md);
-  background: var(--bg-secondary);
+  background: linear-gradient(135deg, var(--bg-secondary) 0%, rgba(94, 159, 215, 0.05) 100%);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
 }
 
 .key-moments-toggle {
-  padding: var(--space-3);
+  padding: var(--space-3) var(--space-4);
   cursor: pointer;
   font-size: var(--font-size-sm);
-  color: var(--text-secondary);
+  font-weight: 500;
+  color: var(--text-primary);
   list-style: none;
 }
 
