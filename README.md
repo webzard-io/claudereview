@@ -18,14 +18,17 @@ bunx claudereview
 # List your Claude Code sessions
 ccshare list
 
-# Preview the most recent session in browser
-ccshare preview --last
+# Share a specific session by ID
+ccshare share abc123
 
-# Share a session and get a URL
+# Share your last session
 ccshare share --last
 
 # Share with password protection
 ccshare share --last --private "your-password"
+
+# Preview the most recent session in browser
+ccshare preview --last
 
 # Export to HTML file
 ccshare export --last -o session.html

@@ -37,6 +37,17 @@ export const apiKeys = pgTable('api_keys', {
   lastUsedAt: timestamp('last_used_at'),
 });
 
+// Session views for analytics (with location)
+export const sessionViews = pgTable('session_views', {
+  id: text('id').primaryKey(), // nanoid
+  sessionId: text('session_id').references(() => sessions.id).notNull(),
+  country: text('country'), // ISO country code
+  city: text('city'),
+  latitude: text('latitude'),
+  longitude: text('longitude'),
+  viewedAt: timestamp('viewed_at').defaultNow().notNull(),
+});
+
 // Type exports
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;

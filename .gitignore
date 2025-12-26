@@ -35,3 +35,6 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # Drizzle migrations
 drizzle/
+
+# Claude Code instructions
+CLAUDE.md

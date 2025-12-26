@@ -1,11 +1,13 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
+import { secureHeaders } from 'hono/secure-headers';
 import { setCookie, getCookie, deleteCookie } from 'hono/cookie';
 import { nanoid } from 'nanoid';
 import { z } from 'zod';
-import { db, sessions, users, apiKeys, type NewSession, type Session, type User } from './db/index.ts';
-import { eq, sql, desc, count, and } from 'drizzle-orm';
+import { timingSafeEqual } from 'crypto';
+import { db, sessions, users, apiKeys, sessionViews, type NewSession, type Session, type User } from './db/index.ts';
+import { eq, sql, desc, count, and, gte, between } from 'drizzle-orm';
 import { decrypt, encrypt, encryptForPublic, encryptForPrivate, generateKey, deriveKey, generateSalt } from './crypto.ts';
 
 const app = new Hono();
@@ -16,11 +18,40 @@ const GITHUB_CLIENT_SECRET = process.env.GITHUB_CLIENT_SECRET;
 const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
 const SESSION_SECRET = process.env.SESSION_SECRET || 'dev-secret-change-in-production';
 
+// Maximum upload size (10MB)
+const MAX_UPLOAD_SIZE = 10 * 1024 * 1024;
+
 // Simple session store (in production, use Redis or database)
 const sessionStore = new Map<string, { userId: string; expiresAt: number }>();
 
+// Session cleanup interval (hourly)
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, session] of sessionStore.entries()) {
+    if (session.expiresAt < now) {
+      sessionStore.delete(id);
+    }
+  }
+}, 60 * 60 * 1000);
+
+// Timing-safe string comparison
+function constantTimeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  try {
+    return timingSafeEqual(Buffer.from(a), Buffer.from(b));
+  } catch {
+    return false;
+  }
+}
+
 // Middleware
 app.use('*', logger());
+app.use('*', secureHeaders({
+  xFrameOptions: 'DENY',
+  xContentTypeOptions: 'nosniff',
+  referrerPolicy: 'strict-origin-when-cross-origin',
+  strictTransportSecurity: 'max-age=31536000; includeSubDomains',
+}));
 app.use('/api/*', cors());
 
 // Auth helper
@@ -77,7 +108,7 @@ app.get('/auth/github/callback', async (c) => {
 
   deleteCookie(c, 'oauth_state');
 
-  if (!code || !state || state !== storedState) {
+  if (!code || !state || !storedState || !constantTimeEqual(state, storedState)) {
     return c.redirect('/?error=invalid_state');
   }
 
@@ -433,16 +464,16 @@ app.delete('/api/keys/:id', async (c) => {
 
 // Upload schema
 const uploadSchema = z.object({
-  encryptedBlob: z.string(),
-  iv: z.string(),
-  salt: z.string().optional(),
-  ownerKey: z.string().optional(), // encryption key for owner to view later
+  encryptedBlob: z.string().max(MAX_UPLOAD_SIZE, 'Session too large (max 10MB)'),
+  iv: z.string().max(100),
+  salt: z.string().max(100).optional(),
+  ownerKey: z.string().max(100).optional(), // encryption key for owner to view later
   visibility: z.enum(['public', 'private']),
   metadata: z.object({
-    title: z.string(),
-    messageCount: z.number(),
-    toolCount: z.number(),
-    durationSeconds: z.number(),
+    title: z.string().max(500),
+    messageCount: z.number().int().min(0).max(100000),
+    toolCount: z.number().int().min(0).max(100000),
+    durationSeconds: z.number().int().min(0).max(864000), // max 10 days
   }),
 });
 
@@ -453,7 +484,7 @@ app.post('/api/upload', async (c) => {
     const parsed = uploadSchema.parse(body);
 
     // Generate short ID for URL
-    const id = nanoid(10);
+    const id = nanoid(12);
 
     // Get user from session cookie (if logged in via web)
     const user = await getCurrentUser(c);
@@ -539,10 +570,49 @@ app.get('/api/session/:id', async (c) => {
     const user = await getCurrentUser(c);
     const isOwner = user && session.userId === user.id;
 
-    // Increment view count
+    // Increment view count (using SQL to avoid race conditions)
     await db.update(sessions)
-      .set({ viewCount: session.viewCount + 1 })
+      .set({ viewCount: sql`${sessions.viewCount} + 1` })
       .where(eq(sessions.id, id));
+
+    // Record view with geolocation (async, don't block response)
+    const clientIp = c.req.header('x-forwarded-for')?.split(',')[0]?.trim()
+      || c.req.header('x-real-ip')
+      || 'unknown';
+
+    // Fire and forget geolocation lookup
+    (async () => {
+      try {
+        // Skip localhost/private IPs
+        if (clientIp === 'unknown' || clientIp === '127.0.0.1' || clientIp.startsWith('192.168.') || clientIp.startsWith('10.')) {
+          await db.insert(sessionViews).values({
+            id: nanoid(12),
+            sessionId: id,
+            country: null,
+            city: null,
+            latitude: null,
+            longitude: null,
+          });
+          return;
+        }
+
+        // Use ip-api.com for geolocation (free, no API key needed)
+        const geoRes = await fetch(`http://ip-api.com/json/${clientIp}?fields=status,country,countryCode,city,lat,lon`);
+        const geo = await geoRes.json() as { status: string; countryCode?: string; city?: string; lat?: number; lon?: number };
+
+        await db.insert(sessionViews).values({
+          id: nanoid(12),
+          sessionId: id,
+          country: geo.status === 'success' ? geo.countryCode : null,
+          city: geo.status === 'success' ? geo.city : null,
+          latitude: geo.status === 'success' && geo.lat ? String(geo.lat) : null,
+          longitude: geo.status === 'success' && geo.lon ? String(geo.lon) : null,
+        });
+      } catch (e) {
+        // Silently ignore geolocation errors
+        console.error('Geolocation error:', e);
+      }
+    })();
 
     return c.json({
       id: session.id,
@@ -603,12 +673,20 @@ const requireAdminApi = async (c: any, next: any) => {
   const authHeader = c.req.header('Authorization');
   const providedKey = authHeader?.replace('Bearer ', '');
 
-  if (providedKey !== adminKey) {
+  if (!providedKey || !constantTimeEqual(providedKey, adminKey)) {
     return c.json({ error: 'Unauthorized' }, 401);
   }
 
   await next();
 };
+
+// Helper to get date N days ago
+function daysAgo(days: number): Date {
+  const date = new Date();
+  date.setDate(date.getDate() - days);
+  date.setHours(0, 0, 0, 0);
+  return date;
+}
 
 // Admin API: Get analytics
 app.get('/api/admin/stats', requireAdminApi, async (c) => {
@@ -617,15 +695,44 @@ app.get('/api/admin/stats', requireAdminApi, async (c) => {
   }
 
   try {
-    // Total sessions
-    const [totalResult] = await db.select({ count: count() }).from(sessions);
-    const totalSessions = totalResult?.count || 0;
+    // Get stats for all time periods
+    const periods = {
+      '7d': daysAgo(7),
+      '30d': daysAgo(30),
+      'all': new Date(0), // Beginning of time
+    };
 
-    // Total views
+    // Stats by period
+    const statsByPeriod: Record<string, { sessions: number; views: number; users: number }> = {};
+
+    for (const [period, startDate] of Object.entries(periods)) {
+      // Sessions in period
+      const [sessionCount] = await db.select({ count: count() })
+        .from(sessions)
+        .where(period === 'all' ? sql`1=1` : gte(sessions.createdAt, startDate));
+
+      // Views in period (from sessionViews table)
+      const [viewCount] = await db.select({ count: count() })
+        .from(sessionViews)
+        .where(period === 'all' ? sql`1=1` : gte(sessionViews.viewedAt, startDate));
+
+      // Users in period
+      const [userCount] = await db.select({ count: count() })
+        .from(users)
+        .where(period === 'all' ? sql`1=1` : gte(users.createdAt, startDate));
+
+      statsByPeriod[period] = {
+        sessions: sessionCount?.count || 0,
+        views: viewCount?.count || 0,
+        users: userCount?.count || 0,
+      };
+    }
+
+    // Total legacy view count (sum of viewCount column)
     const [viewsResult] = await db.select({
       total: sql<number>`COALESCE(SUM(${sessions.viewCount}), 0)`
     }).from(sessions);
-    const totalViews = viewsResult?.total || 0;
+    const legacyViews = viewsResult?.total || 0;
 
     // Public vs private
     const visibilityStats = await db.select({
@@ -647,9 +754,18 @@ app.get('/api/admin/stats', requireAdminApi, async (c) => {
       date: sql<string>`DATE(${sessions.createdAt})`,
       count: count(),
     }).from(sessions)
-      .where(sql`${sessions.createdAt} > NOW() - INTERVAL '30 days'`)
+      .where(gte(sessions.createdAt, daysAgo(30)))
       .groupBy(sql`DATE(${sessions.createdAt})`)
       .orderBy(sql`DATE(${sessions.createdAt})`);
+
+    // Views per day (last 30 days) from sessionViews
+    const viewsPerDay = await db.select({
+      date: sql<string>`DATE(${sessionViews.viewedAt})`,
+      count: count(),
+    }).from(sessionViews)
+      .where(gte(sessionViews.viewedAt, daysAgo(30)))
+      .groupBy(sql`DATE(${sessionViews.viewedAt})`)
+      .orderBy(sql`DATE(${sessionViews.viewedAt})`);
 
     // Top viewed sessions
     const topViewed = await db.select({
@@ -658,13 +774,43 @@ app.get('/api/admin/stats', requireAdminApi, async (c) => {
       viewCount: sessions.viewCount,
     }).from(sessions).orderBy(desc(sessions.viewCount)).limit(10);
 
+    // Location data for map (views with lat/long in last 30 days)
+    const viewLocations = await db.select({
+      latitude: sessionViews.latitude,
+      longitude: sessionViews.longitude,
+      city: sessionViews.city,
+      country: sessionViews.country,
+    }).from(sessionViews)
+      .where(and(
+        gte(sessionViews.viewedAt, daysAgo(30)),
+        sql`${sessionViews.latitude} IS NOT NULL`,
+        sql`${sessionViews.longitude} IS NOT NULL`
+      ))
+      .limit(500); // Limit to prevent huge payloads
+
+    // Country breakdown
+    const viewsByCountry = await db.select({
+      country: sessionViews.country,
+      count: count(),
+    }).from(sessionViews)
+      .where(and(
+        gte(sessionViews.viewedAt, daysAgo(30)),
+        sql`${sessionViews.country} IS NOT NULL`
+      ))
+      .groupBy(sessionViews.country)
+      .orderBy(desc(count()))
+      .limit(20);
+
     return c.json({
-      totalSessions,
-      totalViews,
+      stats: statsByPeriod,
+      legacyViews,
       visibilityStats,
       recentSessions,
       sessionsPerDay,
+      viewsPerDay,
       topViewed,
+      viewLocations,
+      viewsByCountry,
     });
   } catch (error) {
     console.error('Admin stats error:', error);
@@ -780,20 +926,23 @@ function generate500Html(): string {
 }
 
 function generateLandingHtml(user: User | null): string {
-  const headerRight = user
+  const userSection = user
     ? `<a href="/dashboard" class="user-link">
         <img src="${escapeHtml(user.githubAvatarUrl || '')}" alt="" class="avatar">
-        <span class="username">${escapeHtml(user.githubUsername)}</span>
+        ${escapeHtml(user.githubUsername)}
       </a>`
-    : `<a href="/auth/github" class="login-btn">Sign in with GitHub</a>`;
+    : `<a href="/auth/github" class="login-btn"><svg class="github-icon" viewBox="0 0 16 16" width="16" height="16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>Sign in with GitHub</a>`;
 
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>claudereview - Share Claude Code Sessions</title>
-  <meta name="description" content="Share your Claude Code sessions for code review. End-to-end encrypted, beautiful TUI-style viewer.">
+  <title>claudereview — Share Claude Code Sessions</title>
+  <meta name="description" content="Share your Claude Code sessions for code review. End-to-end encrypted, beautiful viewer. Drop a link in your PR.">
+  <meta property="og:title" content="claudereview — Share Claude Code Sessions">
+  <meta property="og:description" content="Share how the code was built, not just the final diff. E2E encrypted.">
+  <meta property="og:type" content="website">
   <style>${LANDING_CSS}</style>
 </head>
 <body>
@@ -803,60 +952,171 @@ function generateLandingHtml(user: User | null): string {
         <span class="logo-icon">◈</span>
         <span class="logo-text">claude<span class="accent">review</span></span>
       </div>
-      ${headerRight}
+      <div class="header-right">
+        <button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme">
+          <span class="theme-icon">◐</span>
+        </button>
+        ${userSection}
+      </div>
     </header>
 
-    <main>
+    <section class="hero">
+      <div class="hero-badge">Open Source</div>
       <h1>Share Claude Code sessions<br>for code review</h1>
-      <p class="subtitle">
-        Drop a link in your PR so reviewers can see <em>how</em> the code was built,<br>
-        not just the final diff. End-to-end encrypted.
+      <p class="hero-subtitle">
+        Drop a link in your PR so reviewers can see how the code was built, not just the final diff. End-to-end encrypted.
       </p>
-
-      <div class="install">
-        <pre><code>bun add -g claudereview</code></pre>
-        <p class="hint">or: npm install -g claudereview</p>
+      <div class="hero-actions">
+        <a href="#install" class="btn-primary">Get Started</a>
+        <a href="https://github.com/vignesh07/claudereview" class="btn-secondary" target="_blank">View on GitHub</a>
       </div>
+    </section>
 
-      <div class="usage">
-        <pre><code><span class="dim"># List your sessions</span>
-ccshare list
-
-<span class="dim"># Share the last session</span>
-ccshare share --last
-
-<span class="dim"># Share with password protection</span>
-ccshare share --last --private "secret"
-
-<span class="dim"># Preview locally</span>
-ccshare preview --last</code></pre>
-      </div>
-
-      <div class="features">
-        <div class="feature">
-          <span class="icon">🔐</span>
-          <h3>E2E Encrypted</h3>
-          <p>We can't read your sessions. Keys never touch our servers.</p>
+    <section class="preview-section">
+      <div class="preview-window">
+        <div class="preview-header">
+          <span class="preview-dot red"></span>
+          <span class="preview-dot yellow"></span>
+          <span class="preview-dot green"></span>
+          <span class="preview-title">claudereview.com/s/abc123</span>
         </div>
-        <div class="feature">
-          <span class="icon">🔗</span>
-          <h3>Deep Links</h3>
-          <p>Link to specific messages. Perfect for code review comments.</p>
-        </div>
-        <div class="feature">
-          <span class="icon">⚡</span>
-          <h3>Fast</h3>
-          <p>Instant parsing, instant sharing. Built with Bun.</p>
+        <div class="preview-content">
+          <div class="preview-message">
+            <div class="preview-role human">Human</div>
+            <div class="preview-text">Add a dark mode toggle to the settings page</div>
+          </div>
+          <div class="preview-message">
+            <div class="preview-role assistant">Claude</div>
+            <div class="preview-text">I'll add a dark mode toggle. Let me first check the current theme implementation...</div>
+            <div class="preview-tool">
+              <div class="preview-tool-name">Read · src/theme.ts</div>
+              <div class="preview-tool-content">Found theme context with light mode only</div>
+            </div>
+            <div class="preview-tool">
+              <div class="preview-tool-name">Edit · src/settings.tsx</div>
+              <div class="preview-tool-content">Added toggle switch component</div>
+            </div>
+          </div>
         </div>
       </div>
-    </main>
+    </section>
+
+    <section class="features-section">
+      <h2>Built for developers</h2>
+      <div class="features-grid">
+        <div class="feature-card">
+          <div class="feature-icon">◇</div>
+          <h3>End-to-end encrypted</h3>
+          <p>Encryption keys never touch our servers. We can't read your sessions even if we wanted to.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">→</div>
+          <h3>Deep linking</h3>
+          <p>Link directly to specific messages. Perfect for pointing reviewers to key decisions.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">⚡</div>
+          <h3>Instant sharing</h3>
+          <p>One command to share. Built with Bun for speed. Works with any Claude Code session.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">◈</div>
+          <h3>Beautiful viewer</h3>
+          <p>TUI-style interface with syntax highlighting, collapsible tools, and keyboard navigation.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">⊕</div>
+          <h3>Public or private</h3>
+          <p>Share openly with a link, or password-protect sensitive sessions. You control access.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">↻</div>
+          <h3>Open source</h3>
+          <p>MIT licensed. Self-host if you prefer. Audit the code yourself.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="install-section" id="install">
+      <h2>Get started in seconds</h2>
+      <p class="subtitle">Install the CLI and share your first session</p>
+      <div class="install-box">
+        <code>bun add -g claudereview</code>
+        <button class="copy-btn" onclick="copyInstall(this)">Copy</button>
+      </div>
+      <p class="install-alt">or npm install -g claudereview</p>
+    </section>
+
+    <section class="usage-section">
+      <h2>Simple commands</h2>
+      <p class="subtitle">Everything you need to share sessions</p>
+      <pre class="usage-code"><span class="comment"># List your recent sessions</span>
+<span class="cmd">ccshare list</span>
+
+<span class="comment"># Share a specific session by ID</span>
+<span class="cmd">ccshare share abc123</span>
+
+<span class="comment"># Share your last session</span>
+<span class="cmd">ccshare share --last</span>
+
+<span class="comment"># Password-protect a session</span>
+<span class="cmd">ccshare share --last --private "secret"</span>
+
+<span class="comment"># Preview locally before sharing</span>
+<span class="cmd">ccshare preview --last</span></pre>
+    </section>
 
     <footer>
-      <a href="https://github.com/vignesh07/claudereview">GitHub</a>
-      <span class="sep">·</span>
-      <span class="dim">Built for developers who use Claude Code</span>
+      <div class="footer-links">
+        <a href="https://github.com/vignesh07/claudereview">GitHub</a>
+        <a href="/dashboard">Dashboard</a>
+      </div>
+      <p class="footer-note">Built for developers who use Claude Code</p>
     </footer>
   </div>
+
+  <script>
+    function toggleTheme() {
+      const html = document.documentElement;
+      const current = html.getAttribute('data-theme');
+      const next = current === 'dark' ? 'light' : 'dark';
+      html.setAttribute('data-theme', next);
+      localStorage.setItem('theme', next);
+      updateThemeIcon();
+    }
+
+    function updateThemeIcon() {
+      const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+      document.querySelector('.theme-icon').textContent = isDark ? '○' : '◐';
+    }
+
+    function copyInstall(btn) {
+      const textarea = document.createElement('textarea');
+      textarea.value = 'bun add -g claudereview';
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+      btn.textContent = 'Copied!';
+      setTimeout(() => btn.textContent = 'Copy', 1500);
+    }
+
+    // Check saved theme or system preference
+    const saved = localStorage.getItem('theme');
+    if (saved) {
+      document.documentElement.setAttribute('data-theme', saved);
+    } else if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
+      document.documentElement.setAttribute('data-theme', 'dark');
+    }
+    updateThemeIcon();
+
+    // Header scroll effect
+    window.addEventListener('scroll', () => {
+      document.querySelector('header').classList.toggle('scrolled', window.scrollY > 10);
+    });
+  </script>
 </body>
 </html>`;
 }
@@ -878,6 +1138,10 @@ function generateDashboardHtml(user: User): string {
         <a href="/" class="logo-text">claude<span class="accent">review</span></a>
       </div>
       <div class="user-info">
+        <button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme">
+          <span class="icon-sun">&#9728;</span>
+          <span class="icon-moon">&#9790;</span>
+        </button>
         <img src="${escapeHtml(user.githubAvatarUrl || '')}" alt="" class="avatar">
         <span class="username">${escapeHtml(user.githubUsername)}</span>
         <a href="/auth/logout" class="logout-link">Logout</a>
@@ -1001,6 +1265,28 @@ function generateDashboardHtml(user: User): string {
   </div>
 
   <script>
+    // Theme toggle
+    function toggleTheme() {
+      const html = document.documentElement;
+      const current = html.getAttribute('data-theme');
+      const next = current === 'dark' ? null : 'dark';
+      if (next) {
+        html.setAttribute('data-theme', next);
+        localStorage.setItem('ccshare-theme', next);
+      } else {
+        html.removeAttribute('data-theme');
+        localStorage.removeItem('ccshare-theme');
+      }
+    }
+
+    // Apply saved theme on load
+    (function() {
+      const saved = localStorage.getItem('ccshare-theme');
+      if (saved === 'dark') {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
+    })();
+
     let currentEditId = null;
     let currentDeleteId = null;
 
@@ -1349,7 +1635,11 @@ function generateAdminHtml(): string {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Admin Dashboard - claudereview</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>◈</text></svg>">
   <style>${ADMIN_CSS}</style>
+  <!-- Leaflet for maps -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 </head>
 <body>
   <!-- Login prompt -->
@@ -1371,61 +1661,169 @@ function generateAdminHtml(): string {
   <!-- Dashboard (hidden until authenticated) -->
   <div id="dashboard" class="container hidden">
     <header>
-      <div class="logo">
-        <span class="logo-icon">◈</span>
-        <span class="logo-text">claude<span class="accent">review</span></span>
-        <span class="admin-badge">admin</span>
+      <div class="header-left">
+        <a href="/" class="logo">
+          <span class="logo-icon">◈</span>
+          <span class="logo-text">claude<span class="accent">review</span></span>
+        </a>
+        <span class="admin-badge">Admin</span>
       </div>
-      <button id="logout-btn" class="logout-btn">Logout</button>
+      <div class="header-right">
+        <button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme">
+          <span class="icon-sun">&#9728;</span>
+          <span class="icon-moon">&#9790;</span>
+        </button>
+        <button id="logout-btn" class="logout-btn">Logout</button>
+      </div>
     </header>
 
     <main>
-      <div class="stats-grid" id="stats-grid">
-        <div class="stat-card">
-          <div class="stat-value" id="total-sessions">-</div>
-          <div class="stat-label">Total Sessions</div>
+      <!-- Period Toggle -->
+      <div class="period-toggle">
+        <button class="period-btn" data-period="7d">7 days</button>
+        <button class="period-btn active" data-period="30d">30 days</button>
+        <button class="period-btn" data-period="all">All time</button>
+      </div>
+
+      <!-- Stats Grid -->
+      <div class="stats-grid">
+        <div class="stat-card sessions">
+          <div class="stat-icon">&#9881;</div>
+          <div class="stat-value" id="stat-sessions">-</div>
+          <div class="stat-label">Sessions Shared</div>
         </div>
-        <div class="stat-card">
-          <div class="stat-value" id="total-views">-</div>
+        <div class="stat-card views">
+          <div class="stat-icon">&#128065;</div>
+          <div class="stat-value" id="stat-views">-</div>
           <div class="stat-label">Total Views</div>
         </div>
-        <div class="stat-card">
-          <div class="stat-value" id="public-count">-</div>
-          <div class="stat-label">Public</div>
+        <div class="stat-card users">
+          <div class="stat-icon">&#128100;</div>
+          <div class="stat-value" id="stat-users">-</div>
+          <div class="stat-label">Users</div>
         </div>
-        <div class="stat-card">
-          <div class="stat-value" id="private-count">-</div>
-          <div class="stat-label">Private</div>
+        <div class="stat-card public">
+          <div class="stat-icon">&#128279;</div>
+          <div class="stat-value" id="stat-public">-</div>
+          <div class="stat-label">Public Sessions</div>
         </div>
       </div>
 
-      <section class="section">
-        <h2>Sessions per Day (Last 30 days)</h2>
-        <div class="chart" id="chart"></div>
-      </section>
+      <!-- Charts Row -->
+      <div class="grid-2">
+        <section class="section">
+          <div class="section-header">
+            <h2>Sessions per Day</h2>
+          </div>
+          <div class="chart" id="sessions-chart"></div>
+        </section>
+        <section class="section">
+          <div class="section-header">
+            <h2>Views per Day</h2>
+          </div>
+          <div class="chart" id="views-chart"></div>
+        </section>
+      </div>
 
-      <section class="section">
-        <h2>Top Viewed Sessions</h2>
-        <table class="data-table" id="top-viewed">
-          <thead>
-            <tr><th>Title</th><th>Views</th><th>Link</th></tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </section>
+      <!-- Map and Countries Row -->
+      <div class="grid-3-1">
+        <section class="section">
+          <div class="section-header">
+            <h2>View Locations</h2>
+          </div>
+          <div class="map-container" id="map"></div>
+        </section>
+        <section class="section">
+          <div class="section-header">
+            <h2>Top Countries</h2>
+          </div>
+          <div class="country-list" id="country-list">
+            <div class="no-data">Loading...</div>
+          </div>
+        </section>
+      </div>
 
-      <section class="section">
-        <h2>Recent Sessions</h2>
-        <table class="data-table" id="recent-sessions">
-          <thead>
-            <tr><th>Title</th><th>Type</th><th>Views</th><th>Created</th><th>Link</th></tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </section>
+      <!-- Tables Row -->
+      <div class="grid-2">
+        <section class="section">
+          <div class="section-header">
+            <h2>Top Viewed</h2>
+          </div>
+          <table class="data-table" id="top-viewed">
+            <thead>
+              <tr><th>Title</th><th>Views</th><th></th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </section>
+        <section class="section">
+          <div class="section-header">
+            <h2>Recent Sessions</h2>
+          </div>
+          <table class="data-table" id="recent-sessions">
+            <thead>
+              <tr><th>Title</th><th>Type</th><th>Views</th><th>Created</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </section>
+      </div>
     </main>
   </div>
+
   <script>
+    // Theme toggle
+    function toggleTheme() {
+      const html = document.documentElement;
+      const current = html.getAttribute('data-theme');
+      const next = current === 'dark' ? null : 'dark';
+      if (next) {
+        html.setAttribute('data-theme', next);
+        localStorage.setItem('ccshare-admin-theme', next);
+      } else {
+        html.removeAttribute('data-theme');
+        localStorage.removeItem('ccshare-admin-theme');
+      }
+      updateMapTheme();
+    }
+
+    // Apply saved theme
+    (function() {
+      const saved = localStorage.getItem('ccshare-admin-theme');
+      if (saved === 'dark') {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
+    })();
+
+    // Country code to flag emoji
+    function countryFlag(code) {
+      if (!code) return '🌍';
+      const codePoints = code.toUpperCase().split('').map(c => 127397 + c.charCodeAt(0));
+      return String.fromCodePoint(...codePoints);
+    }
+
+    // Country code to name
+    const countryNames = {
+      US: 'United States', GB: 'United Kingdom', DE: 'Germany', FR: 'France',
+      IN: 'India', CA: 'Canada', AU: 'Australia', JP: 'Japan', BR: 'Brazil',
+      NL: 'Netherlands', SE: 'Sweden', ES: 'Spain', IT: 'Italy', PL: 'Poland',
+      CH: 'Switzerland', AT: 'Austria', BE: 'Belgium', DK: 'Denmark', NO: 'Norway',
+      FI: 'Finland', IE: 'Ireland', NZ: 'New Zealand', SG: 'Singapore', KR: 'South Korea',
+      MX: 'Mexico', AR: 'Argentina', CO: 'Colombia', CL: 'Chile', PT: 'Portugal',
+      RU: 'Russia', UA: 'Ukraine', IL: 'Israel', AE: 'UAE', ZA: 'South Africa',
+      CN: 'China', HK: 'Hong Kong', TW: 'Taiwan', TH: 'Thailand', MY: 'Malaysia',
+      PH: 'Philippines', ID: 'Indonesia', VN: 'Vietnam', PK: 'Pakistan', BD: 'Bangladesh'
+    };
+
+    function countryName(code) {
+      return countryNames[code] || code || 'Unknown';
+    }
+
+    let map = null;
+    let markers = [];
+    let cachedData = null;
+    let currentPeriod = '30d';
+
     (function() {
       const loginScreen = document.getElementById('login-screen');
       const dashboard = document.getElementById('dashboard');
@@ -1434,17 +1832,23 @@ function generateAdminHtml(): string {
       const adminKeyInput = document.getElementById('admin-key');
       const logoutBtn = document.getElementById('logout-btn');
 
-      // Check for saved session
+      // Period toggle
+      document.querySelectorAll('.period-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          document.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          currentPeriod = btn.dataset.period;
+          if (cachedData) updateStats(cachedData);
+        });
+      });
+
       const savedKey = sessionStorage.getItem('adminKey');
-      if (savedKey) {
-        authenticate(savedKey);
-      }
+      if (savedKey) authenticate(savedKey);
 
       loginForm.addEventListener('submit', async (e) => {
         e.preventDefault();
-        const key = adminKeyInput.value;
         loginError.classList.add('hidden');
-        await authenticate(key);
+        await authenticate(adminKeyInput.value);
       });
 
       logoutBtn.addEventListener('click', () => {
@@ -1467,8 +1871,8 @@ function generateAdminHtml(): string {
           }
 
           sessionStorage.setItem('adminKey', key);
-          const data = await res.json();
-          renderDashboard(data);
+          cachedData = await res.json();
+          renderDashboard(cachedData);
           loginScreen.classList.add('hidden');
           dashboard.classList.remove('hidden');
         } catch (err) {
@@ -1477,49 +1881,149 @@ function generateAdminHtml(): string {
         }
       }
 
-      function renderDashboard(data) {
-        document.getElementById('total-sessions').textContent = data.totalSessions.toLocaleString();
-        document.getElementById('total-views').textContent = data.totalViews.toLocaleString();
+      function updateStats(data) {
+        const stats = data.stats[currentPeriod] || { sessions: 0, views: 0, users: 0 };
+        document.getElementById('stat-sessions').textContent = stats.sessions.toLocaleString();
+        // Show tracked views + legacy views for all time
+        const viewCount = currentPeriod === 'all' ? (stats.views + (data.legacyViews || 0)) : stats.views;
+        document.getElementById('stat-views').textContent = viewCount.toLocaleString();
+        document.getElementById('stat-users').textContent = stats.users.toLocaleString();
 
         const publicCount = data.visibilityStats.find(s => s.visibility === 'public')?.count || 0;
-        const privateCount = data.visibilityStats.find(s => s.visibility === 'private')?.count || 0;
-        document.getElementById('public-count').textContent = publicCount.toLocaleString();
-        document.getElementById('private-count').textContent = privateCount.toLocaleString();
+        document.getElementById('stat-public').textContent = publicCount.toLocaleString();
+      }
 
-        // Render chart
-        const chart = document.getElementById('chart');
-        if (data.sessionsPerDay.length === 0) {
-          chart.innerHTML = '<div class="no-data">No data yet</div>';
-        } else {
-          const maxCount = Math.max(...data.sessionsPerDay.map(d => d.count), 1);
-          chart.innerHTML = data.sessionsPerDay.map(d => {
-            const height = (d.count / maxCount * 100).toFixed(0);
-            const date = new Date(d.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-            return '<div class="bar" style="height:' + height + '%"><span class="bar-value">' + d.count + '</span><span class="bar-label">' + date + '</span></div>';
-          }).join('');
-        }
+      function renderDashboard(data) {
+        updateStats(data);
 
-        // Top viewed
+        // Sessions chart
+        renderChart('sessions-chart', data.sessionsPerDay, 'Sessions');
+
+        // Views chart
+        renderChart('views-chart', data.viewsPerDay || [], 'Views');
+
+        // Initialize map
+        initMap(data.viewLocations || []);
+
+        // Country list
+        renderCountries(data.viewsByCountry || []);
+
+        // Top viewed table
         const topViewedBody = document.querySelector('#top-viewed tbody');
-        if (data.topViewed.length === 0) {
+        if (!data.topViewed?.length) {
           topViewedBody.innerHTML = '<tr><td colspan="3" class="no-data">No sessions yet</td></tr>';
         } else {
-          topViewedBody.innerHTML = data.topViewed.map(s =>
-            '<tr><td>' + escapeHtml(s.title?.slice(0,50) || 'Untitled') + '</td><td>' + s.viewCount + '</td><td><a href="/s/' + s.id + '">View</a></td></tr>'
+          topViewedBody.innerHTML = data.topViewed.slice(0, 8).map(s =>
+            '<tr><td>' + escapeHtml(s.title?.slice(0,40) || 'Untitled') + '</td><td>' + s.viewCount + '</td><td><a href="/s/' + s.id + '">View</a></td></tr>'
           ).join('');
         }
 
-        // Recent sessions
+        // Recent sessions table
         const recentBody = document.querySelector('#recent-sessions tbody');
-        if (data.recentSessions.length === 0) {
-          recentBody.innerHTML = '<tr><td colspan="5" class="no-data">No sessions yet</td></tr>';
+        if (!data.recentSessions?.length) {
+          recentBody.innerHTML = '<tr><td colspan="4" class="no-data">No sessions yet</td></tr>';
         } else {
-          recentBody.innerHTML = data.recentSessions.map(s => {
-            const date = new Date(s.createdAt).toLocaleDateString();
-            const type = s.visibility === 'private' ? '🔐' : '🔗';
-            return '<tr><td>' + escapeHtml(s.title?.slice(0,50) || 'Untitled') + '</td><td>' + type + '</td><td>' + s.viewCount + '</td><td>' + date + '</td><td><a href="/s/' + s.id + '">View</a></td></tr>';
+          recentBody.innerHTML = data.recentSessions.slice(0, 8).map(s => {
+            const date = new Date(s.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+            const pill = '<span class="visibility-pill ' + s.visibility + '">' + s.visibility + '</span>';
+            return '<tr><td><a href="/s/' + s.id + '">' + escapeHtml(s.title?.slice(0,30) || 'Untitled') + '</a></td><td>' + pill + '</td><td>' + s.viewCount + '</td><td>' + date + '</td></tr>';
           }).join('');
         }
+      }
+
+      function renderChart(containerId, data, label) {
+        const chart = document.getElementById(containerId);
+        if (!data?.length) {
+          chart.innerHTML = '<div class="no-data">No data yet</div>';
+          return;
+        }
+        const maxCount = Math.max(...data.map(d => d.count), 1);
+        chart.innerHTML = data.slice(-30).map(d => {
+          const height = Math.max((d.count / maxCount * 100), 4);
+          const date = new Date(d.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+          return '<div class="bar" style="height:' + height + '%" data-count="' + d.count + '"><span class="bar-label">' + date + '</span></div>';
+        }).join('');
+      }
+
+      function initMap(locations) {
+        const mapContainer = document.getElementById('map');
+        if (!locations?.length) {
+          mapContainer.innerHTML = '<div class="map-placeholder"><span class="map-placeholder-icon">🗺️</span>No location data yet</div>';
+          return;
+        }
+
+        // Initialize Leaflet map
+        const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+        const tileUrl = isDark
+          ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
+          : 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png';
+
+        if (map) {
+          map.remove();
+        }
+
+        map = L.map('map', {
+          center: [20, 0],
+          zoom: 2,
+          scrollWheelZoom: false,
+          attributionControl: false
+        });
+
+        L.tileLayer(tileUrl, {
+          maxZoom: 18,
+        }).addTo(map);
+
+        // Add markers
+        markers = locations.map(loc => {
+          const lat = parseFloat(loc.latitude);
+          const lng = parseFloat(loc.longitude);
+          if (isNaN(lat) || isNaN(lng)) return null;
+
+          return L.circleMarker([lat, lng], {
+            radius: 5,
+            fillColor: '#0066ff',
+            color: '#0066ff',
+            weight: 1,
+            opacity: 0.8,
+            fillOpacity: 0.4
+          }).bindPopup(loc.city ? loc.city + ', ' + loc.country : loc.country || 'Unknown')
+            .addTo(map);
+        }).filter(Boolean);
+      }
+
+      function updateMapTheme() {
+        if (!map) return;
+        const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+        const tileUrl = isDark
+          ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
+          : 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png';
+
+        // Remove existing tile layer and add new one
+        map.eachLayer(layer => {
+          if (layer instanceof L.TileLayer) {
+            map.removeLayer(layer);
+          }
+        });
+        L.tileLayer(tileUrl, { maxZoom: 18 }).addTo(map);
+      }
+
+      window.updateMapTheme = updateMapTheme;
+
+      function renderCountries(countries) {
+        const container = document.getElementById('country-list');
+        if (!countries?.length) {
+          container.innerHTML = '<div class="no-data">No location data yet</div>';
+          return;
+        }
+        container.innerHTML = countries.slice(0, 10).map(c =>
+          '<div class="country-item">' +
+            '<span class="country-name">' +
+              '<span class="country-flag">' + countryFlag(c.country) + '</span>' +
+              countryName(c.country) +
+            '</span>' +
+            '<span class="country-count">' + c.count + '</span>' +
+          '</div>'
+        ).join('');
       }
 
       function escapeHtml(str) {
@@ -1754,64 +2258,143 @@ header {
 `;
 
 const LANDING_CSS = `
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,700;1,9..40,400&family=DM+Mono:wght@400;500&display=swap');
+
 :root {
-  --bg: #0d1117;
-  --bg-secondary: #161b22;
-  --border: #30363d;
-  --text: #c9d1d9;
-  --text-muted: #8b949e;
-  --text-bright: #f0f6fc;
-  --accent: #58a6ff;
-  --font-mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', Menlo, monospace;
-  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  --bg: #fafafa;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #f0f0f0;
+  --border: #e0e0e0;
+  --text: #1a1a1a;
+  --text-muted: #666666;
+  --text-bright: #000000;
+  --accent: #0066ff;
+  --accent-soft: rgba(0, 102, 255, 0.08);
+  --green: #00a67d;
+  --font-mono: 'DM Mono', 'JetBrains Mono', monospace;
+  --font-sans: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+[data-theme="dark"] {
+  --bg: #0a0a0a;
+  --bg-secondary: #141414;
+  --bg-tertiary: #1a1a1a;
+  --border: #2a2a2a;
+  --text: #e0e0e0;
+  --text-muted: #888888;
+  --text-bright: #ffffff;
+  --accent: #4d94ff;
+  --accent-soft: rgba(77, 148, 255, 0.1);
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
-html, body {
+html {
+  scroll-behavior: smooth;
+}
+
+body {
   background: var(--bg);
   color: var(--text);
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   min-height: 100vh;
+  line-height: 1.6;
+  transition: background 0.3s, color 0.3s;
 }
 
 .container {
-  max-width: 800px;
+  max-width: 1100px;
   margin: 0 auto;
-  padding: 4rem 2rem;
+  padding: 0 2rem;
 }
 
+/* Header */
 header {
-  margin-bottom: 4rem;
+  padding: 1.5rem 0;
   display: flex;
   justify-content: space-between;
   align-items: center;
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+  z-index: 100;
+  border-bottom: 1px solid transparent;
+}
+
+header.scrolled {
+  border-bottom-color: var(--border);
 }
 
 .logo {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.625rem;
 }
 
-.logo-icon { color: var(--accent); font-size: 1.5rem; }
-.logo-text { font-size: 1.25rem; color: var(--text-muted); }
+.logo-icon {
+  color: var(--accent);
+  font-size: 1.5rem;
+  font-weight: 500;
+}
+
+.logo-text {
+  font-family: var(--font-mono);
+  font-size: 1.125rem;
+  color: var(--text);
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+
 .accent { color: var(--accent); }
 
-.login-btn {
-  background: var(--bg-secondary);
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.theme-toggle {
+  background: none;
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 0.5rem 1rem;
+  padding: 0.5rem;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 1rem;
+  transition: all 0.15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+}
+
+.theme-toggle:hover {
+  border-color: var(--text-muted);
   color: var(--text);
+}
+
+.login-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: var(--text-bright);
+  border: none;
+  border-radius: 6px;
+  padding: 0.5rem 1rem;
+  color: var(--bg);
   text-decoration: none;
   font-size: 0.875rem;
+  font-weight: 500;
   transition: all 0.15s;
 }
 
+.login-btn .github-icon {
+  flex-shrink: 0;
+}
+
 .login-btn:hover {
-  border-color: var(--accent);
-  color: var(--accent);
+  opacity: 0.85;
 }
 
 .user-link {
@@ -1820,88 +2403,382 @@ header {
   gap: 0.5rem;
   text-decoration: none;
   color: var(--text);
-  padding: 0.25rem 0.5rem;
+  padding: 0.375rem 0.75rem;
   border-radius: 6px;
-  transition: background 0.15s;
+  border: 1px solid var(--border);
+  transition: all 0.15s;
+  font-size: 0.875rem;
+  font-weight: 500;
 }
 
 .user-link:hover {
-  background: var(--bg-secondary);
+  border-color: var(--text-muted);
 }
 
 .user-link .avatar {
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
   border-radius: 50%;
-  border: 2px solid var(--border);
 }
 
-.user-link .username {
-  font-size: 0.875rem;
-}
-
-main h1 {
-  font-family: var(--font-sans);
-  font-size: 2.5rem;
-  color: var(--text-bright);
-  line-height: 1.2;
-  margin-bottom: 1rem;
-}
-
-.subtitle {
-  color: var(--text-muted);
-  font-size: 1.1rem;
-  line-height: 1.6;
-  margin-bottom: 3rem;
-}
-
-.subtitle em { color: var(--accent); font-style: normal; }
-
-.install {
-  margin-bottom: 2rem;
-}
-
-.install pre {
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 1rem 1.5rem;
-  font-size: 1rem;
-}
-
-.install code { color: var(--text-bright); }
-.hint { color: var(--text-muted); font-size: 0.875rem; margin-top: 0.5rem; }
-
-.usage {
-  margin-bottom: 3rem;
-}
-
-.usage pre {
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 1.5rem;
-  font-size: 0.9rem;
-  line-height: 1.8;
-  overflow-x: auto;
-}
-
-.usage .dim { color: var(--text-muted); }
-
-.features {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 2rem;
-  margin-bottom: 4rem;
-}
-
-.feature {
+/* Hero Section */
+.hero {
+  padding: 6rem 0 4rem;
   text-align: center;
 }
 
-.feature .icon { font-size: 2rem; margin-bottom: 0.5rem; display: block; }
-.feature h3 { font-family: var(--font-sans); color: var(--text-bright); margin-bottom: 0.5rem; }
-.feature p { color: var(--text-muted); font-size: 0.875rem; }
+.hero-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: var(--accent-soft);
+  color: var(--accent);
+  padding: 0.375rem 0.875rem;
+  border-radius: 100px;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  margin-bottom: 1.5rem;
+}
+
+.hero h1 {
+  font-size: clamp(2.5rem, 5vw, 3.5rem);
+  font-weight: 700;
+  color: var(--text-bright);
+  line-height: 1.1;
+  margin-bottom: 1.25rem;
+  letter-spacing: -0.03em;
+}
+
+.hero-subtitle {
+  color: var(--text-muted);
+  font-size: 1.25rem;
+  line-height: 1.6;
+  max-width: 600px;
+  margin: 0 auto 2.5rem;
+}
+
+.hero-actions {
+  display: flex;
+  gap: 1rem;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.btn-primary {
+  background: var(--text-bright);
+  color: var(--bg);
+  padding: 0.75rem 1.5rem;
+  border-radius: 8px;
+  text-decoration: none;
+  font-weight: 500;
+  font-size: 0.9375rem;
+  transition: all 0.15s;
+  border: none;
+  cursor: pointer;
+}
+
+.btn-primary:hover {
+  opacity: 0.85;
+  transform: translateY(-1px);
+}
+
+.btn-secondary {
+  background: transparent;
+  color: var(--text);
+  padding: 0.75rem 1.5rem;
+  border-radius: 8px;
+  text-decoration: none;
+  font-weight: 500;
+  font-size: 0.9375rem;
+  border: 1px solid var(--border);
+  transition: all 0.15s;
+}
+
+.btn-secondary:hover {
+  border-color: var(--text-muted);
+}
+
+/* Preview Section */
+.preview-section {
+  padding: 2rem 0 6rem;
+}
+
+.preview-window {
+  background: #0d1117;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+  border: 1px solid #30363d;
+}
+
+.preview-header {
+  background: #161b22;
+  padding: 0.75rem 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  border-bottom: 1px solid #30363d;
+}
+
+.preview-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+}
+
+.preview-dot.red { background: #ff5f56; }
+.preview-dot.yellow { background: #ffbd2e; }
+.preview-dot.green { background: #27ca40; }
+
+.preview-title {
+  flex: 1;
+  text-align: center;
+  color: #8b949e;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+}
+
+.preview-content {
+  padding: 1.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  color: #c9d1d9;
+  min-height: 300px;
+}
+
+.preview-message {
+  margin-bottom: 1.5rem;
+}
+
+.preview-role {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 0.5rem;
+  font-weight: 500;
+}
+
+.preview-role.human { color: #58a6ff; }
+.preview-role.assistant { color: #a371f7; }
+
+.preview-text {
+  color: #e6edf3;
+  line-height: 1.6;
+}
+
+.preview-tool {
+  background: #1c2128;
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  margin: 0.75rem 0;
+  border-left: 3px solid #3fb950;
+}
+
+.preview-tool-name {
+  color: #3fb950;
+  font-size: 0.75rem;
+  font-weight: 500;
+  margin-bottom: 0.25rem;
+}
+
+.preview-tool-content {
+  color: #8b949e;
+  font-size: 0.8125rem;
+}
+
+/* Install Section */
+.install-section {
+  padding: 4rem 0;
+  text-align: center;
+}
+
+.install-section h2 {
+  font-size: 1.75rem;
+  font-weight: 700;
+  color: var(--text-bright);
+  margin-bottom: 0.5rem;
+  letter-spacing: -0.02em;
+}
+
+.install-section .subtitle {
+  color: var(--text-muted);
+  margin-bottom: 2rem;
+}
+
+.install-box {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1.25rem 1.5rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 1rem;
+  font-family: var(--font-mono);
+  font-size: 1rem;
+  color: var(--text-bright);
+}
+
+.install-box code {
+  user-select: all;
+}
+
+.copy-btn {
+  background: var(--accent-soft);
+  border: none;
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  color: var(--accent);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  cursor: pointer;
+  font-family: var(--font-sans);
+  transition: all 0.15s;
+}
+
+.copy-btn:hover {
+  background: var(--accent);
+  color: white;
+}
+
+.install-alt {
+  color: var(--text-muted);
+  font-size: 0.875rem;
+  margin-top: 1rem;
+}
+
+/* Features Section */
+.features-section {
+  padding: 4rem 0;
+}
+
+.features-section h2 {
+  font-size: 1.75rem;
+  font-weight: 700;
+  color: var(--text-bright);
+  text-align: center;
+  margin-bottom: 3rem;
+  letter-spacing: -0.02em;
+}
+
+.features-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1.5rem;
+}
+
+.feature-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1.75rem;
+  transition: all 0.2s;
+}
+
+.feature-card:hover {
+  border-color: var(--text-muted);
+  transform: translateY(-2px);
+}
+
+.feature-icon {
+  width: 40px;
+  height: 40px;
+  background: var(--accent-soft);
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.25rem;
+  margin-bottom: 1rem;
+}
+
+.feature-card h3 {
+  font-size: 1.0625rem;
+  font-weight: 600;
+  color: var(--text-bright);
+  margin-bottom: 0.5rem;
+}
+
+.feature-card p {
+  color: var(--text-muted);
+  font-size: 0.9375rem;
+  line-height: 1.5;
+}
+
+/* Usage Section */
+.usage-section {
+  padding: 4rem 0;
+}
+
+.usage-section h2 {
+  font-size: 1.75rem;
+  font-weight: 700;
+  color: var(--text-bright);
+  text-align: center;
+  margin-bottom: 0.5rem;
+  letter-spacing: -0.02em;
+}
+
+.usage-section .subtitle {
+  color: var(--text-muted);
+  text-align: center;
+  margin-bottom: 2.5rem;
+}
+
+.usage-code {
+  background: #0d1117;
+  border-radius: 12px;
+  padding: 1.5rem 2rem;
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+  line-height: 2;
+  overflow-x: auto;
+  color: #e6edf3;
+  border: 1px solid #30363d;
+}
+
+.usage-code .comment { color: #8b949e; }
+.usage-code .cmd { color: #79c0ff; }
+
+/* Footer */
+footer {
+  padding: 3rem 0;
+  text-align: center;
+  border-top: 1px solid var(--border);
+  margin-top: 2rem;
+}
+
+footer a {
+  color: var(--text-muted);
+  text-decoration: none;
+  font-size: 0.875rem;
+  transition: color 0.15s;
+}
+
+footer a:hover {
+  color: var(--text);
+}
+
+.footer-links {
+  display: flex;
+  gap: 1.5rem;
+  justify-content: center;
+  margin-bottom: 1rem;
+}
+
+.footer-note {
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .hero { padding: 4rem 0 3rem; }
+  .hero h1 { font-size: 2rem; }
+  .hero-subtitle { font-size: 1.0625rem; }
+  .preview-content { min-height: 250px; padding: 1rem; }
+  .features-grid { grid-template-columns: 1fr; }
+  .install-box { flex-direction: column; gap: 0.75rem; }
+}
 
 footer {
   color: var(--text-muted);
@@ -1920,19 +2797,48 @@ footer a:hover { text-decoration: underline; }
 `;
 
 const ADMIN_CSS = `
+@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600;700&display=swap');
+
 :root {
-  --bg: #0d1117;
-  --bg-secondary: #161b22;
-  --bg-tertiary: #21262d;
-  --border: #30363d;
-  --text: #c9d1d9;
-  --text-muted: #8b949e;
-  --text-bright: #f0f6fc;
-  --accent: #58a6ff;
+  --bg: #fafafa;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #f5f5f5;
+  --border: #e5e5e5;
+  --text: #333333;
+  --text-muted: #666666;
+  --text-bright: #1a1a1a;
+  --accent: #0066ff;
+  --accent-soft: rgba(0, 102, 255, 0.08);
+  --green: #22863a;
+  --green-soft: rgba(34, 134, 58, 0.08);
+  --purple: #8957e5;
+  --purple-soft: rgba(137, 87, 229, 0.08);
+  --orange: #d97706;
+  --orange-soft: rgba(217, 119, 6, 0.08);
+  --font-mono: 'DM Mono', 'JetBrains Mono', monospace;
+  --font-sans: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.04);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.06);
+}
+
+[data-theme="dark"] {
+  --bg: #0a0a0a;
+  --bg-secondary: #141414;
+  --bg-tertiary: #1a1a1a;
+  --border: #2a2a2a;
+  --text: #e0e0e0;
+  --text-muted: #888888;
+  --text-bright: #ffffff;
+  --accent: #4d94ff;
+  --accent-soft: rgba(77, 148, 255, 0.12);
   --green: #3fb950;
+  --green-soft: rgba(63, 185, 80, 0.12);
   --purple: #a371f7;
-  --font-mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', Menlo, monospace;
-  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  --purple-soft: rgba(163, 113, 247, 0.12);
+  --orange: #f59e0b;
+  --orange-soft: rgba(245, 158, 11, 0.12);
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.2);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.3);
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -1940,42 +2846,133 @@ const ADMIN_CSS = `
 html, body {
   background: var(--bg);
   color: var(--text);
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
 }
 
 .container {
-  max-width: 1200px;
+  max-width: 1400px;
   margin: 0 auto;
   padding: 2rem;
 }
 
+/* Header */
 header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
   margin-bottom: 2rem;
-  padding-bottom: 1rem;
+  padding-bottom: 1.5rem;
   border-bottom: 1px solid var(--border);
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
 }
 
 .logo {
   display: flex;
   align-items: center;
   gap: 0.5rem;
+  text-decoration: none;
 }
 
 .logo-icon { color: var(--accent); font-size: 1.5rem; }
-.logo-text { font-size: 1.25rem; color: var(--text-muted); }
+.logo-text { font-size: 1.25rem; color: var(--text-muted); font-family: var(--font-mono); }
 .accent { color: var(--accent); }
 
 .admin-badge {
-  background: var(--purple);
-  color: white;
-  font-size: 0.75rem;
-  padding: 0.25rem 0.5rem;
-  border-radius: 4px;
-  margin-left: 0.5rem;
-  font-weight: 500;
+  background: var(--purple-soft);
+  color: var(--purple);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  padding: 0.25rem 0.625rem;
+  border-radius: 100px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
 }
 
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.theme-toggle {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.5rem;
+  cursor: pointer;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  transition: all 0.15s;
+}
+
+.theme-toggle:hover {
+  border-color: var(--text-muted);
+  color: var(--text);
+}
+
+.theme-toggle .icon-sun { display: none; }
+.theme-toggle .icon-moon { display: inline; }
+[data-theme="dark"] .theme-toggle .icon-sun { display: inline; }
+[data-theme="dark"] .theme-toggle .icon-moon { display: none; }
+
+.logout-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.5rem 1rem;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  transition: all 0.15s;
+}
+
+.logout-btn:hover {
+  color: var(--text);
+  border-color: var(--text-muted);
+}
+
+/* Period Toggle */
+.period-toggle {
+  display: inline-flex;
+  background: var(--bg-tertiary);
+  border-radius: 8px;
+  padding: 4px;
+  gap: 2px;
+  margin-bottom: 1.5rem;
+}
+
+.period-btn {
+  background: none;
+  border: none;
+  padding: 0.5rem 1rem;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 6px;
+  transition: all 0.15s;
+}
+
+.period-btn:hover {
+  color: var(--text);
+}
+
+.period-btn.active {
+  background: var(--bg-secondary);
+  color: var(--text-bright);
+  box-shadow: var(--shadow-sm);
+}
+
+/* Stats Grid */
 .stats-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -1986,86 +2983,150 @@ header {
 .stat-card {
   background: var(--bg-secondary);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 12px;
   padding: 1.5rem;
-  text-align: center;
+  box-shadow: var(--shadow-sm);
+  transition: transform 0.2s, box-shadow 0.2s;
 }
+
+.stat-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+}
+
+.stat-card.sessions { border-left: 3px solid var(--accent); }
+.stat-card.views { border-left: 3px solid var(--green); }
+.stat-card.users { border-left: 3px solid var(--purple); }
+.stat-card.public { border-left: 3px solid var(--orange); }
+
+.stat-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1rem;
+  margin-bottom: 1rem;
+}
+
+.stat-card.sessions .stat-icon { background: var(--accent-soft); color: var(--accent); }
+.stat-card.views .stat-icon { background: var(--green-soft); color: var(--green); }
+.stat-card.users .stat-icon { background: var(--purple-soft); color: var(--purple); }
+.stat-card.public .stat-icon { background: var(--orange-soft); color: var(--orange); }
 
 .stat-value {
   font-size: 2rem;
-  font-weight: 600;
+  font-weight: 700;
   color: var(--text-bright);
-  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
 }
 
 .stat-label {
   color: var(--text-muted);
-  font-size: 0.875rem;
-  margin-top: 0.5rem;
+  font-size: 0.8125rem;
+  margin-top: 0.375rem;
 }
 
-.section {
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 1.5rem;
+/* Grid Layout */
+.grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.5rem;
   margin-bottom: 1.5rem;
 }
 
-.section h2 {
-  font-family: var(--font-sans);
-  font-size: 1rem;
-  color: var(--text-bright);
-  margin-bottom: 1rem;
+.grid-3-1 {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 1.5rem;
+  margin-bottom: 1.5rem;
 }
 
+/* Section Cards */
+.section {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1.5rem;
+  box-shadow: var(--shadow-sm);
+}
+
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1.25rem;
+}
+
+.section h2 {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--text-bright);
+}
+
+/* Chart */
 .chart {
   display: flex;
   align-items: flex-end;
-  gap: 4px;
-  height: 150px;
-  padding: 1rem 0;
+  gap: 3px;
+  height: 140px;
+  padding: 0.5rem 0 1.5rem;
 }
 
 .bar {
   flex: 1;
-  min-width: 20px;
-  background: linear-gradient(to top, var(--accent), var(--purple));
-  border-radius: 4px 4px 0 0;
+  background: var(--accent);
+  border-radius: 3px 3px 0 0;
   position: relative;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: flex-start;
   min-height: 4px;
+  transition: all 0.3s ease;
+  cursor: pointer;
 }
 
-.bar-value {
-  font-size: 0.625rem;
-  color: var(--text-bright);
+.bar:hover {
+  background: var(--purple);
+}
+
+.bar::after {
+  content: attr(data-count);
   position: absolute;
-  top: -18px;
+  top: -20px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 0.625rem;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.bar:hover::after {
+  opacity: 1;
 }
 
 .bar-label {
-  font-size: 0.5rem;
+  font-size: 0.5625rem;
+  font-family: var(--font-mono);
   color: var(--text-muted);
   position: absolute;
-  bottom: -18px;
+  bottom: -20px;
+  left: 50%;
+  transform: translateX(-50%);
   white-space: nowrap;
-  transform: rotate(-45deg);
-  transform-origin: top left;
 }
 
+/* Data Table */
 .data-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 0.875rem;
+  font-size: 0.8125rem;
 }
 
 .data-table th,
 .data-table td {
-  padding: 0.75rem;
+  padding: 0.75rem 0.5rem;
   text-align: left;
   border-bottom: 1px solid var(--border);
 }
@@ -2073,10 +3134,18 @@ header {
 .data-table th {
   color: var(--text-muted);
   font-weight: 500;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
 }
 
 .data-table td {
   color: var(--text);
+  font-family: var(--font-mono);
+}
+
+.data-table tr:last-child td {
+  border-bottom: none;
 }
 
 .data-table a {
@@ -2088,7 +3157,85 @@ header {
   text-decoration: underline;
 }
 
-/* Login screen */
+.visibility-pill {
+  display: inline-block;
+  font-size: 0.6875rem;
+  padding: 0.125rem 0.5rem;
+  border-radius: 100px;
+  font-weight: 500;
+}
+
+.visibility-pill.public {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.visibility-pill.private {
+  background: var(--purple-soft);
+  color: var(--purple);
+}
+
+/* Map Container */
+.map-container {
+  height: 300px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg-tertiary);
+  position: relative;
+}
+
+.map-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-muted);
+  font-size: 0.875rem;
+}
+
+.map-placeholder-icon {
+  font-size: 2rem;
+  margin-bottom: 0.5rem;
+  opacity: 0.5;
+}
+
+/* Country List */
+.country-list {
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.country-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.625rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.country-item:last-child {
+  border-bottom: none;
+}
+
+.country-name {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+}
+
+.country-flag {
+  font-size: 1.125rem;
+}
+
+.country-count {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+/* Login Screen */
 .login-screen {
   display: flex;
   align-items: center;
@@ -2100,11 +3247,12 @@ header {
 .login-box {
   background: var(--bg-secondary);
   border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 2rem;
+  border-radius: 16px;
+  padding: 2.5rem;
   text-align: center;
   width: 100%;
-  max-width: 360px;
+  max-width: 380px;
+  box-shadow: var(--shadow-md);
 }
 
 .login-box .logo {
@@ -2121,12 +3269,13 @@ header {
 .login-box input {
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  padding: 0.875rem 1rem;
   font-family: var(--font-mono);
-  font-size: 1rem;
+  font-size: 0.9375rem;
   color: var(--text);
   text-align: center;
+  transition: border-color 0.15s;
 }
 
 .login-box input:focus {
@@ -2137,13 +3286,14 @@ header {
 .login-box button {
   background: var(--accent);
   border: none;
-  border-radius: 6px;
-  padding: 0.75rem;
-  font-size: 1rem;
-  font-weight: 500;
+  border-radius: 8px;
+  padding: 0.875rem;
+  font-size: 0.9375rem;
+  font-weight: 600;
   color: white;
   cursor: pointer;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
+  transition: opacity 0.15s;
 }
 
 .login-box button:hover {
@@ -2151,25 +3301,9 @@ header {
 }
 
 .login-box .error {
-  color: #f85149;
-  font-size: 0.875rem;
+  color: #d73a49;
+  font-size: 0.8125rem;
   margin-top: 1rem;
-}
-
-.logout-btn {
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 0.5rem 1rem;
-  color: var(--text-muted);
-  cursor: pointer;
-  font-family: var(--font-mono);
-  font-size: 0.875rem;
-}
-
-.logout-btn:hover {
-  color: var(--text);
-  border-color: var(--text-muted);
 }
 
 .hidden { display: none !important; }
@@ -2178,22 +3312,44 @@ header {
   color: var(--text-muted);
   text-align: center;
   padding: 2rem;
-  font-style: italic;
+  font-size: 0.875rem;
 }
 
-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
+/* Responsive */
+@media (max-width: 1024px) {
+  .grid-3-1 { grid-template-columns: 1fr; }
+  .grid-2 { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 768px) {
   .stats-grid { grid-template-columns: repeat(2, 1fr); }
+  .container { padding: 1rem; }
+}
+
+@media (max-width: 480px) {
+  .stats-grid { grid-template-columns: 1fr; }
+  .header-left { flex-direction: column; align-items: flex-start; gap: 0.5rem; }
 }
 `;
 
 const DASHBOARD_CSS = `
 :root {
+  --bg: #fafafa;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #f0f0f0;
+  --border: #e0e0e0;
+  --text: #333333;
+  --text-muted: #666666;
+  --text-bright: #1a1a1a;
+  --accent: #0066ff;
+  --green: #22863a;
+  --red: #d73a49;
+  --purple: #8957e5;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', Menlo, monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+}
+
+[data-theme="dark"] {
   --bg: #0d1117;
   --bg-secondary: #161b22;
   --bg-tertiary: #21262d;
@@ -2205,8 +3361,6 @@ const DASHBOARD_CSS = `
   --green: #3fb950;
   --red: #f85149;
   --purple: #a371f7;
-  --font-mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', Menlo, monospace;
-  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -2717,6 +3871,32 @@ main h1 {
 }
 
 .hidden { display: none !important; }
+
+/* Theme toggle */
+.theme-toggle {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.375rem 0.5rem;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 1rem;
+  transition: all 0.15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.theme-toggle:hover {
+  border-color: var(--text-muted);
+  color: var(--text);
+}
+
+.theme-toggle .icon-sun { display: none; }
+.theme-toggle .icon-moon { display: inline; }
+
+[data-theme="dark"] .theme-toggle .icon-sun { display: inline; }
+[data-theme="dark"] .theme-toggle .icon-moon { display: none; }
 
 @media (max-width: 640px) {
   .session-card {
