@@ -2327,11 +2327,14 @@ function generateAdminHtml(): string {
     .section { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px; padding: 1.25rem; margin-bottom: 1.5rem; }
     .section h2 { font-size: 1rem; font-weight: 600; color: var(--text); margin-bottom: 1rem; }
 
-    .chart { display: flex; align-items: flex-end; gap: 2px; height: 120px; }
-    .bar { flex: 1; background: var(--accent); border-radius: 2px 2px 0 0; min-height: 4px; position: relative; }
-    .bar:hover { opacity: 0.8; }
-    .bar::after { content: attr(data-count); position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); font-size: 0.625rem; color: var(--text-muted); opacity: 0; transition: opacity 0.15s; white-space: nowrap; padding-bottom: 2px; }
-    .bar:hover::after { opacity: 1; }
+    .chart { height: 120px; position: relative; }
+    .chart svg { width: 100%; height: 100%; }
+    .chart-area { fill: var(--accent); opacity: 0.15; }
+    .chart-line { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    .chart-dot { fill: var(--accent); opacity: 0; transition: opacity 0.15s; }
+    .chart-dot:hover { opacity: 1; }
+    .chart-tooltip { position: absolute; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 6px; padding: 0.375rem 0.5rem; font-size: 0.75rem; pointer-events: none; opacity: 0; transition: opacity 0.15s; z-index: 10; white-space: nowrap; }
+    .chart-tooltip.visible { opacity: 1; }
 
     .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
 
@@ -2560,16 +2563,76 @@ function generateAdminHtml(): string {
       }
 
       function renderChart(containerId, data) {
-        const chart = document.getElementById(containerId);
+        const container = document.getElementById(containerId);
         if (!data?.length) {
-          chart.innerHTML = '<div class="no-data">No data yet</div>';
+          container.innerHTML = '<div class="no-data">No data yet</div>';
           return;
         }
-        const maxCount = Math.max(...data.map(d => d.count), 1);
-        chart.innerHTML = data.slice(-30).map(d => {
-          const height = Math.max((d.count / maxCount * 100), 4);
-          return '<div class="bar" style="height:' + height + '%" data-count="' + d.count + '"></div>';
-        }).join('');
+
+        const points = data.slice(-30);
+        const maxCount = Math.max(...points.map(d => d.count), 1);
+        const width = 400, height = 120, padding = 10;
+        const chartWidth = width - padding * 2;
+        const chartHeight = height - padding * 2;
+
+        // Calculate point coordinates
+        const coords = points.map((d, i) => ({
+          x: padding + (i / Math.max(points.length - 1, 1)) * chartWidth,
+          y: padding + chartHeight - (d.count / maxCount) * chartHeight,
+          count: d.count,
+          date: d.date
+        }));
+
+        // Generate smooth curve using cardinal spline
+        function cardinalSpline(pts, tension = 0.3) {
+          if (pts.length < 2) return '';
+          if (pts.length === 2) return 'M' + pts[0].x + ',' + pts[0].y + 'L' + pts[1].x + ',' + pts[1].y;
+
+          let path = 'M' + pts[0].x + ',' + pts[0].y;
+          for (let i = 0; i < pts.length - 1; i++) {
+            const p0 = pts[Math.max(0, i - 1)];
+            const p1 = pts[i];
+            const p2 = pts[i + 1];
+            const p3 = pts[Math.min(pts.length - 1, i + 2)];
+
+            const cp1x = p1.x + (p2.x - p0.x) * tension;
+            const cp1y = p1.y + (p2.y - p0.y) * tension;
+            const cp2x = p2.x - (p3.x - p1.x) * tension;
+            const cp2y = p2.y - (p3.y - p1.y) * tension;
+
+            path += 'C' + cp1x + ',' + cp1y + ',' + cp2x + ',' + cp2y + ',' + p2.x + ',' + p2.y;
+          }
+          return path;
+        }
+
+        const linePath = cardinalSpline(coords);
+        const areaPath = linePath + 'L' + coords[coords.length-1].x + ',' + (height - padding) + 'L' + coords[0].x + ',' + (height - padding) + 'Z';
+
+        // Build SVG
+        const dots = coords.map(c =>
+          '<circle class="chart-dot" cx="' + c.x + '" cy="' + c.y + '" r="4" data-count="' + c.count + '" data-date="' + c.date + '"/>'
+        ).join('');
+
+        container.innerHTML = '<svg viewBox="0 0 ' + width + ' ' + height + '" preserveAspectRatio="none">' +
+          '<path class="chart-area" d="' + areaPath + '"/>' +
+          '<path class="chart-line" d="' + linePath + '"/>' +
+          dots +
+        '</svg><div class="chart-tooltip" id="' + containerId + '-tooltip"></div>';
+
+        // Add hover interactions
+        const tooltip = document.getElementById(containerId + '-tooltip');
+        container.querySelectorAll('.chart-dot').forEach(dot => {
+          dot.addEventListener('mouseenter', (e) => {
+            const d = e.target.dataset;
+            tooltip.textContent = d.date + ': ' + d.count;
+            tooltip.classList.add('visible');
+            const rect = container.getBoundingClientRect();
+            const cx = parseFloat(e.target.getAttribute('cx'));
+            tooltip.style.left = (cx / width * rect.width - tooltip.offsetWidth / 2) + 'px';
+            tooltip.style.top = (parseFloat(e.target.getAttribute('cy')) / height * rect.height - 30) + 'px';
+          });
+          dot.addEventListener('mouseleave', () => tooltip.classList.remove('visible'));
+        });
       }
 
       function escapeHtml(str) {
