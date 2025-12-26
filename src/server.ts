@@ -6,6 +6,7 @@ import { nanoid } from 'nanoid';
 import { z } from 'zod';
 import { db, sessions, users, apiKeys, type NewSession, type Session, type User } from './db/index.ts';
 import { eq, sql, desc, count, and } from 'drizzle-orm';
+import { decrypt, encrypt, encryptForPublic, encryptForPrivate, generateKey, deriveKey, generateSalt } from './crypto.ts';
 
 const app = new Hono();
 
@@ -249,7 +250,11 @@ app.patch('/api/sessions/:id', async (c) => {
   }
 
   const sessionId = c.req.param('id');
-  const body = await c.req.json() as { title?: string; visibility?: 'public' | 'private' };
+  const body = await c.req.json() as {
+    title?: string;
+    visibility?: 'public' | 'private';
+    password?: string;
+  };
 
   if (!db) {
     return c.json({ error: 'Database not configured' }, 500);
@@ -264,15 +269,58 @@ app.patch('/api/sessions/:id', async (c) => {
     return c.json({ error: 'Session not found or not owned by you' }, 404);
   }
 
-  const updates: Partial<typeof session> = {};
-  if (body.title) updates.title = body.title.slice(0, 200);
-  if (body.visibility) updates.visibility = body.visibility;
+  const updates: Partial<Session> = {};
+  let newKey: string | undefined;
+
+  // Handle title update
+  if (body.title) {
+    updates.title = body.title.slice(0, 200);
+  }
+
+  // Handle visibility change (requires re-encryption)
+  if (body.visibility && body.visibility !== session.visibility) {
+    // Need ownerKey to decrypt current data
+    if (!session.ownerKey) {
+      return c.json({ error: 'Cannot change visibility: encryption key not available' }, 400);
+    }
+
+    try {
+      // Decrypt current data
+      const decryptedData = decrypt(session.encryptedBlob, session.iv, session.ownerKey);
+
+      if (body.visibility === 'private') {
+        // Changing to private: encrypt with password
+        if (!body.password) {
+          return c.json({ error: 'Password required for private sessions' }, 400);
+        }
+
+        const encrypted = await encryptForPrivate(decryptedData, body.password);
+        updates.encryptedBlob = encrypted.ciphertext;
+        updates.iv = encrypted.iv;
+        updates.salt = encrypted.salt;
+        updates.ownerKey = null; // No key storage for password-protected sessions
+        updates.visibility = 'private';
+      } else {
+        // Changing to public: encrypt with random key
+        const encrypted = encryptForPublic(decryptedData);
+        updates.encryptedBlob = encrypted.ciphertext;
+        updates.iv = encrypted.iv;
+        updates.salt = null;
+        updates.ownerKey = encrypted.key; // Store key for owner access
+        updates.visibility = 'public';
+        newKey = encrypted.key; // Return to client for URL
+      }
+    } catch (err) {
+      console.error('Re-encryption failed:', err);
+      return c.json({ error: 'Failed to change visibility' }, 500);
+    }
+  }
 
   if (Object.keys(updates).length > 0) {
     await db.update(sessions).set(updates).where(eq(sessions.id, sessionId));
   }
 
-  return c.json({ success: true });
+  return c.json({ success: true, newKey });
 });
 
 // ============================================================================
@@ -865,6 +913,21 @@ function generateDashboardHtml(user: User): string {
           Title
           <input type="text" id="edit-title" maxlength="200">
         </label>
+        <label>
+          Visibility
+          <select id="edit-visibility">
+            <option value="public">Public (link with key)</option>
+            <option value="private">Private (password protected)</option>
+          </select>
+        </label>
+        <div id="password-fields" class="hidden">
+          <label>
+            Password
+            <input type="password" id="edit-password" placeholder="Enter password for private session">
+          </label>
+          <p class="field-hint">Required when changing to private. Anyone with the password can view.</p>
+        </div>
+        <div id="edit-error" class="edit-error hidden"></div>
         <div class="modal-actions">
           <button type="button" class="btn-secondary" onclick="closeModal()">Cancel</button>
           <button type="submit" class="btn-primary">Save</button>
@@ -956,7 +1019,7 @@ function generateDashboardHtml(user: User): string {
             <div class="session-actions">
               <button class="btn-text" onclick="copyLink('\${s.id}')">Copy</button>
               <a href="/s/\${s.id}" class="btn-text" target="_blank">Preview</a>
-              <button class="btn-text" onclick="openEditModal('\${s.id}', '\${escapeHtml(s.title).replace(/'/g, "\\\\'")}' )">Edit</button>
+              <button class="btn-text" onclick="openEditModal('\${s.id}', '\${escapeHtml(s.title).replace(/'/g, "\\\\'")}', '\${s.visibility}')">Edit</button>
               <button class="btn-icon btn-danger" onclick="openDeleteModal('\${s.id}')" title="Delete">×</button>
             </div>
           </div>
@@ -998,15 +1061,36 @@ function generateDashboardHtml(user: User): string {
       }, 1500);
     }
 
-    function openEditModal(id, title) {
+    let currentEditVisibility = null;
+
+    function openEditModal(id, title, visibility) {
       currentEditId = id;
+      currentEditVisibility = visibility;
       document.getElementById('edit-title').value = title;
+      document.getElementById('edit-visibility').value = visibility;
+      document.getElementById('edit-password').value = '';
+      document.getElementById('edit-error').classList.add('hidden');
+      updatePasswordFieldVisibility();
       document.getElementById('edit-modal').classList.remove('hidden');
     }
+
+    function updatePasswordFieldVisibility() {
+      const newVisibility = document.getElementById('edit-visibility').value;
+      const passwordFields = document.getElementById('password-fields');
+      // Show password field when changing TO private
+      if (newVisibility === 'private' && currentEditVisibility === 'public') {
+        passwordFields.classList.remove('hidden');
+      } else {
+        passwordFields.classList.add('hidden');
+      }
+    }
+
+    document.getElementById('edit-visibility').addEventListener('change', updatePasswordFieldVisibility);
 
     function closeModal() {
       document.getElementById('edit-modal').classList.add('hidden');
       currentEditId = null;
+      currentEditVisibility = null;
     }
 
     function openDeleteModal(id) {
@@ -1022,19 +1106,50 @@ function generateDashboardHtml(user: User): string {
     document.getElementById('edit-form').addEventListener('submit', async (e) => {
       e.preventDefault();
       const title = document.getElementById('edit-title').value;
+      const visibility = document.getElementById('edit-visibility').value;
+      const password = document.getElementById('edit-password').value;
+      const errorEl = document.getElementById('edit-error');
+      errorEl.classList.add('hidden');
+
+      // Validate: password required when changing to private
+      if (visibility === 'private' && currentEditVisibility === 'public' && !password) {
+        errorEl.textContent = 'Password is required when making a session private';
+        errorEl.classList.remove('hidden');
+        return;
+      }
 
       try {
+        const body = { title };
+        if (visibility !== currentEditVisibility) {
+          body.visibility = visibility;
+          if (password) body.password = password;
+        }
+
         const res = await fetch('/api/sessions/' + currentEditId, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title })
+          body: JSON.stringify(body)
         });
 
-        if (!res.ok) throw new Error('Failed to update');
+        const data = await res.json();
+
+        if (!res.ok) {
+          throw new Error(data.error || 'Failed to update');
+        }
+
         closeModal();
+
+        // If we got a new key (changed to public), show it
+        if (data.newKey) {
+          const newUrl = window.location.origin + '/s/' + currentEditId + '#key=' + data.newKey;
+          alert('Session is now public!\\n\\nNew shareable URL:\\n' + newUrl);
+          navigator.clipboard.writeText(newUrl);
+        }
+
         loadSessions();
       } catch (err) {
-        alert('Failed to update session');
+        errorEl.textContent = err.message;
+        errorEl.classList.remove('hidden');
       }
     });
 
@@ -2331,6 +2446,26 @@ main h1 {
   display: flex;
   gap: 0.75rem;
   justify-content: flex-end;
+}
+
+.edit-error {
+  background: rgba(248, 81, 73, 0.15);
+  border: 1px solid var(--red);
+  color: var(--red);
+  padding: 0.75rem;
+  border-radius: 6px;
+  font-size: 0.875rem;
+  margin-bottom: 1rem;
+}
+
+.field-hint {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-top: 0.25rem;
+}
+
+#password-fields {
+  margin-top: 0.5rem;
 }
 
 .btn-secondary, .btn-primary, .btn-danger {
