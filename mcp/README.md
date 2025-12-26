@@ -17,11 +17,25 @@ Then add to `~/.mcp.json`:
   "mcpServers": {
     "claudereview": {
       "command": "bunx",
-      "args": ["claudereview-mcp"]
+      "args": ["claudereview-mcp"],
+      "env": {
+        "CCSHARE_API_KEY": "your-api-key-here"
+      }
     }
   }
 }
 ```
+
+## Authentication
+
+To link shared sessions to your account:
+
+1. Log in at [claudereview.com](https://claudereview.com) with GitHub
+2. Go to Dashboard → Settings → API Keys
+3. Create a new API key
+4. Add it to your MCP config as shown above
+
+Without an API key, sessions are shared anonymously and won't appear in your dashboard.
 
 ## Tools
 

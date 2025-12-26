@@ -19,9 +19,11 @@ import {
 import { readdir, stat, readFile } from 'fs/promises';
 import { join } from 'path';
 import { homedir } from 'os';
+import { renderSessionToHtml } from './renderer.ts';
 
 const CLAUDE_PROJECTS_DIR = join(homedir(), '.claude', 'projects');
-const API_URL = process.env.CLAUDEREVIEW_API_URL || 'https://claudereview.com';
+const API_URL = process.env.CCSHARE_API_URL || process.env.CLAUDEREVIEW_API_URL || 'https://claudereview.com';
+const API_KEY = process.env.CCSHARE_API_KEY;
 
 // Session discovery
 interface LocalSession {
@@ -264,17 +266,36 @@ async function shareSession(sessionId: string, title?: string): Promise<{ url: s
   // Parse session into structured format (matching CLI parser)
   const parsedSession = parseSessionContent(content, sessionId, title);
 
-  // Encrypt the parsed session data (not raw JSONL)
+  // Render session to full HTML (matching CLI)
+  const renderedHtml = renderSessionToHtml(parsedSession);
+
+  // Create payload with both HTML and session data (like CLI does)
+  const payload = JSON.stringify({
+    html: renderedHtml,
+    session: {
+      id: parsedSession.id,
+      title: parsedSession.title,
+      metadata: parsedSession.metadata,
+      messages: parsedSession.messages,
+    },
+  });
+
+  // Encrypt the payload
   const key = generateKey();
-  const { ciphertext, iv } = await encrypt(JSON.stringify(parsedSession), key);
+  const { ciphertext, iv } = await encrypt(payload, key);
 
   const { messageCount, toolCount, durationSeconds } = parsedSession.metadata;
 
   // Upload
   try {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (API_KEY) {
+      headers['Authorization'] = `Bearer ${API_KEY}`;
+    }
+
     const response = await fetch(`${API_URL}/api/upload`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({
         encryptedBlob: ciphertext,
         iv,
@@ -378,8 +399,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: 'text', text: `Error: ${result.error}` }] };
     }
 
+    const authNote = API_KEY
+      ? 'This session is linked to your account.'
+      : '⚠️ No API key configured - session shared anonymously. Set CCSHARE_API_KEY to link sessions to your account.';
+
     return {
-      content: [{ type: 'text', text: `Session shared successfully!\n\nURL: ${result.url}\n\nThis link is encrypted. Only people with this exact URL can view the session.` }],
+      content: [{ type: 'text', text: `Session shared successfully!\n\nURL: ${result.url}\n\nThis link is encrypted. Only people with this exact URL can view the session.\n\n${authNote}` }],
     };
   }
 
