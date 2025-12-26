@@ -1099,11 +1099,12 @@ function generateLandingHtml(user: User | null): string {
       <div class="hero-badge">Open Source</div>
       <h1>Share Claude Code sessions<br>for code review</h1>
       <p class="hero-subtitle">
-        Drop a link in your PR so reviewers can see how the code was built, not just the final diff. Encrypted.
+        Drop a link in your PR so reviewers can see how the code was built, not just the final diff. <a href="/privacy" class="privacy-link">Encrypted end-to-end</a>.
       </p>
       <div class="hero-actions">
         <a href="#install" class="btn-primary">Get Started</a>
-        <a href="https://github.com/vignesh07/claudereview" class="btn-secondary" target="_blank">View on GitHub</a>
+        <a href="/privacy" class="btn-secondary">How Encryption Works</a>
+        <a href="https://github.com/vignesh07/claudereview" class="btn-secondary" target="_blank">GitHub</a>
       </div>
     </section>
 
@@ -2964,6 +2965,16 @@ header.scrolled {
   line-height: 1.6;
   max-width: 600px;
   margin: 0 auto 2.5rem;
+}
+
+.hero-subtitle .privacy-link {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.hero-subtitle .privacy-link:hover {
+  text-decoration-thickness: 2px;
 }
 
 .hero-actions {
