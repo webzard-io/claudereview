@@ -365,13 +365,22 @@ app.patch('/api/sessions/:id', async (c) => {
         newKey = encrypted.key; // Return to client for URL
 
         // Restore metadata from decrypted session when converting to public
+        // Handle both formats:
+        // - Current: { html, session: { id, title, metadata } }
+        // - Legacy: { id, title, metadata, messages }
         try {
           const sessionData = JSON.parse(decryptedData);
-          if (sessionData.title) updates.title = sessionData.title.slice(0, 200);
-          if (sessionData.metadata) {
-            updates.messageCount = sessionData.metadata.messageCount ?? null;
-            updates.toolCount = sessionData.metadata.toolCount ?? null;
-            updates.durationSeconds = sessionData.metadata.durationSeconds ?? null;
+
+          // Try current format first (session.metadata)
+          const session = sessionData.session || sessionData;
+          const metadata = session.metadata;
+          const title = session.title;
+
+          if (title) updates.title = title.slice(0, 200);
+          if (metadata) {
+            updates.messageCount = metadata.messageCount ?? null;
+            updates.toolCount = metadata.toolCount ?? null;
+            updates.durationSeconds = metadata.durationSeconds ?? null;
           }
         } catch {
           // If parsing fails, leave metadata as null
