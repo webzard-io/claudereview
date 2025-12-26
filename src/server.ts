@@ -1066,6 +1066,13 @@ function generateDashboardHtml(user: User): string {
       return date.toLocaleDateString();
     }
 
+    function showToast(message) {
+      const toast = document.getElementById('toast');
+      toast.textContent = message;
+      toast.classList.add('show');
+      setTimeout(() => toast.classList.remove('show'), 3000);
+    }
+
     function copyLink(id, key) {
       let url = window.location.origin + '/s/' + id;
       if (key) url += '#key=' + key;
@@ -1175,16 +1182,21 @@ function generateDashboardHtml(user: User): string {
           throw new Error(data.error || 'Failed to update');
         }
 
+        // Save ID before closing modal (closeModal clears it)
+        const sessionId = currentEditId;
         closeModal();
 
-        // If we got a new key (changed to public), show it
-        if (data.newKey) {
-          const newUrl = window.location.origin + '/s/' + currentEditId + '#key=' + data.newKey;
-          alert('Session is now public!\\n\\nNew shareable URL:\\n' + newUrl);
-          navigator.clipboard.writeText(newUrl);
-        }
+        // Reload sessions first so UI updates
+        await loadSessions();
 
-        loadSessions();
+        // If we got a new key (changed to public), copy and show toast
+        if (data.newKey) {
+          const newUrl = window.location.origin + '/s/' + sessionId + '#key=' + data.newKey;
+          navigator.clipboard.writeText(newUrl);
+          showToast('Session is now public! Link copied to clipboard.');
+        } else {
+          showToast('Session updated successfully.');
+        }
       } catch (err) {
         errorEl.textContent = err.message;
         errorEl.classList.remove('hidden');
@@ -1312,6 +1324,8 @@ function generateDashboardHtml(user: User): string {
     loadSessions();
     loadApiKeys();
   </script>
+
+  <div id="toast" class="toast"></div>
 </body>
 </html>`;
 }
@@ -2572,6 +2586,29 @@ main h1 {
 
 .btn-secondary:hover, .btn-primary:hover, .btn-danger:hover {
   opacity: 0.9;
+}
+
+/* Toast notification */
+.toast {
+  position: fixed;
+  bottom: 2rem;
+  left: 50%;
+  transform: translateX(-50%) translateY(100px);
+  background: var(--green);
+  color: var(--bg);
+  padding: 0.75rem 1.5rem;
+  border-radius: 8px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  opacity: 0;
+  transition: all 0.3s ease;
+  z-index: 1000;
+  pointer-events: none;
+}
+
+.toast.show {
+  transform: translateX(-50%) translateY(0);
+  opacity: 1;
 }
 
 /* API Keys Section */
