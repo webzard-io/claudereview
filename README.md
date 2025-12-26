@@ -111,6 +111,16 @@ bun run cli list
 - `CCSHARE_API_URL`: API URL for CLI (default: https://claudereview.com)
 - `CCSHARE_API_KEY`: API key for authenticated uploads
 
+## Database Setup
+
+```bash
+# Push schema to database (creates tables)
+bun run db:push
+
+# Or run migrations manually
+psql $DATABASE_URL -f drizzle/0001_make_metadata_nullable.sql
+```
+
 ## Deployment
 
 Deploy to Railway:
