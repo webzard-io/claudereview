@@ -521,13 +521,15 @@ app.post('/api/upload', async (c) => {
     }
 
     // Store in database
+    // For private sessions, don't store metadata (title, counts) to ensure true privacy
+    const isPrivate = parsed.visibility === 'private';
     const session: NewSession = {
       id,
       userId,
-      title: parsed.metadata.title.slice(0, 200), // Truncate title
-      messageCount: parsed.metadata.messageCount,
-      toolCount: parsed.metadata.toolCount,
-      durationSeconds: parsed.metadata.durationSeconds,
+      title: isPrivate ? null : parsed.metadata.title.slice(0, 200), // Don't store title for private
+      messageCount: isPrivate ? null : parsed.metadata.messageCount,
+      toolCount: isPrivate ? null : parsed.metadata.toolCount,
+      durationSeconds: isPrivate ? null : parsed.metadata.durationSeconds,
       visibility: parsed.visibility,
       encryptedBlob: parsed.encryptedBlob,
       iv: parsed.iv,
@@ -575,44 +577,23 @@ app.get('/api/session/:id', async (c) => {
       .set({ viewCount: sql`${sessions.viewCount} + 1` })
       .where(eq(sessions.id, id));
 
-    // Record view with geolocation (async, don't block response)
-    const clientIp = c.req.header('x-forwarded-for')?.split(',')[0]?.trim()
-      || c.req.header('x-real-ip')
-      || 'unknown';
+    // Record view (no IP/location tracking for privacy)
+    try {
+      await db.insert(sessionViews).values({
+        id: nanoid(12),
+        sessionId: id,
+        country: null,
+        city: null,
+        latitude: null,
+        longitude: null,
+      });
+    } catch (e) {
+      // Silently ignore view recording errors
+      console.error('View recording error:', e);
+    }
 
-    // Fire and forget geolocation lookup
-    (async () => {
-      try {
-        // Skip localhost/private IPs
-        if (clientIp === 'unknown' || clientIp === '127.0.0.1' || clientIp.startsWith('192.168.') || clientIp.startsWith('10.')) {
-          await db.insert(sessionViews).values({
-            id: nanoid(12),
-            sessionId: id,
-            country: null,
-            city: null,
-            latitude: null,
-            longitude: null,
-          });
-          return;
-        }
-
-        // Use ip-api.com for geolocation (free, no API key needed)
-        const geoRes = await fetch(`http://ip-api.com/json/${clientIp}?fields=status,country,countryCode,city,lat,lon`);
-        const geo = await geoRes.json() as { status: string; countryCode?: string; city?: string; lat?: number; lon?: number };
-
-        await db.insert(sessionViews).values({
-          id: nanoid(12),
-          sessionId: id,
-          country: geo.status === 'success' ? geo.countryCode : null,
-          city: geo.status === 'success' ? geo.city : null,
-          latitude: geo.status === 'success' && geo.lat ? String(geo.lat) : null,
-          longitude: geo.status === 'success' && geo.lon ? String(geo.lon) : null,
-        });
-      } catch (e) {
-        // Silently ignore geolocation errors
-        console.error('Geolocation error:', e);
-      }
-    })();
+    // For private sessions, don't expose any metadata until decrypted
+    const isPrivateSession = session.visibility === 'private';
 
     return c.json({
       id: session.id,
@@ -621,7 +602,8 @@ app.get('/api/session/:id', async (c) => {
       visibility: session.visibility,
       salt: session.salt,
       ownerKey: isOwner ? session.ownerKey : undefined, // Only include key for owner
-      metadata: {
+      // Only include metadata for non-private sessions
+      metadata: isPrivateSession ? undefined : {
         title: session.title,
         messageCount: session.messageCount,
         toolCount: session.toolCount,
@@ -1374,7 +1356,7 @@ function generatePrivacyHtml(user: User | null): string {
 
       <div class="highlight-box">
         <h3><span class="badge green">Password-Protected</span> True End-to-End Encryption</h3>
-        <p>When you share with <code>--private "password"</code>, the encryption key is derived from your password using Argon2. The key never leaves your machine and is never stored on our servers. We cannot decrypt these sessions even if we wanted to.</p>
+        <p>When you share with <code>--private "password"</code>, the encryption key is derived from your password using PBKDF2 (600,000 iterations, SHA-256). The key never leaves your machine and is never stored on our servers. We cannot decrypt these sessions even if we wanted to.</p>
       </div>
 
       <div class="highlight-box">
@@ -1386,7 +1368,7 @@ function generatePrivacyHtml(user: User | null): string {
 
       <h3>Password-Protected Sessions (True E2E)</h3>
       <div class="diagram">┌─────────────┐     ┌──────────────────┐     ┌─────────────┐
-│   Your CLI  │────▶│ Password + Salt  │────▶│   Argon2    │
+│   Your CLI  │────▶│ Password + Salt  │────▶│   PBKDF2    │
 │             │     │                  │     │ Key Derivation
 └─────────────┘     └──────────────────┘     └──────┬──────┘
                                                     │

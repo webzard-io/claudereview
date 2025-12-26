@@ -85,7 +85,7 @@ Then type `/share` in any Claude Code session.
 5. Browser decrypts client-side
 
 ### Private Shares
-1. CLI encrypts session with password-derived key (Argon2)
+1. CLI encrypts session with password-derived key (PBKDF2)
 2. Uploads encrypted blob + salt
 3. Returns URL without key: `claudereview.com/s/abc123`
 4. Viewer prompts for password, derives key, decrypts

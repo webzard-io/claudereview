@@ -25,7 +25,7 @@ bun run start        # Start production server
 - **Server** (`src/server.ts`): Hono web server for uploads and viewer
 - **Parser** (`src/parser.ts`): Parses Claude Code JSONL sessions
 - **Renderer** (`src/renderer.ts`): Generates TUI-style HTML viewer
-- **Crypto** (`src/crypto.ts`): AES-256-GCM encryption + Argon2 key derivation
+- **Crypto** (`src/crypto.ts`): AES-256-GCM encryption + PBKDF2 key derivation
 
 ## Session Format
 
@@ -40,9 +40,9 @@ Claude Code stores sessions in `~/.claude/projects/<project>/` as JSONL:
 ## Encryption
 
 - **Public**: Random key, embedded in URL fragment (`#key=xxx`)
-- **Private**: Password → Argon2 → AES key. Salt stored on server.
+- **Private**: Password → PBKDF2 → AES key. Salt stored on server.
 
-The URL fragment is never sent to the server, ensuring true E2E encryption.
+The URL fragment is never sent to the server. For password-protected sessions, the key is derived client-side and never stored.
 
 ## Tech Stack
 
@@ -50,7 +50,7 @@ The URL fragment is never sent to the server, ensuring true E2E encryption.
 - Hono (web framework)
 - Drizzle (ORM)
 - PostgreSQL (database)
-- Argon2 (key derivation)
+- PBKDF2 (key derivation)
 
 ## Environment
 

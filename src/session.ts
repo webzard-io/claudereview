@@ -53,7 +53,7 @@ export async function listSessions(): Promise<LocalSession[]> {
         sessions.push({
           id,
           path: filePath,
-          projectPath: decodeProjectPath(projectDir),
+          projectPath: await decodeProjectPath(projectDir),
           modifiedAt: fileStat.mtime,
           title,
         });
@@ -144,10 +144,51 @@ export async function parseLastSession(): Promise<ParsedSession> {
 /**
  * Decode the project directory name to actual path
  * e.g., "-Users-vignesh-myproject" -> "/Users/vignesh/myproject"
+ *
+ * Note: This encoding is lossy - a hyphen in a directory name (e.g., "my-app")
+ * becomes indistinguishable from a path separator. We try to find the actual
+ * path by walking up from the most specific interpretation.
  */
-function decodeProjectPath(encodedPath: string): string {
-  // Replace leading dash and subsequent dashes with path separators
-  return '/' + encodedPath.replace(/^-/, '').replace(/-/g, '/');
+async function decodeProjectPath(encodedPath: string): Promise<string> {
+  // Simple decode: replace leading dash and subsequent dashes with path separators
+  const simpleDecoded = '/' + encodedPath.replace(/^-/, '').replace(/-/g, '/');
+
+  // Try to validate the path exists
+  try {
+    await stat(simpleDecoded);
+    return simpleDecoded;
+  } catch {
+    // Path doesn't exist, try to find a valid parent path
+    // by progressively joining segments
+  }
+
+  // Try building path by checking each level
+  const segments = encodedPath.replace(/^-/, '').split('-');
+  let currentPath = '';
+
+  for (let i = 0; i < segments.length; i++) {
+    const testPath = currentPath + '/' + segments[i];
+    try {
+      await stat(testPath);
+      currentPath = testPath;
+    } catch {
+      // This segment might need to be joined with the next
+      // Try joining remaining segments with hyphens progressively
+      let remaining = segments.slice(i).join('-');
+      const testFullPath = currentPath + '/' + remaining;
+      try {
+        await stat(testFullPath);
+        return testFullPath;
+      } catch {
+        // Keep trying with fewer hyphens converted to path separators
+        currentPath = testPath;
+      }
+    }
+  }
+
+  // If we can't validate, return the simple decoded version
+  // (it's only used for display/filtering anyway)
+  return simpleDecoded;
 }
 
 /**
