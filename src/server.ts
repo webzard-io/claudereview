@@ -1018,7 +1018,7 @@ function generateDashboardHtml(user: User): string {
             </div>
             <div class="session-actions">
               <button class="btn-text" onclick="copyLink('\${s.id}')">Copy</button>
-              <a href="/s/\${s.id}" class="btn-text" target="_blank">Preview</a>
+              <a href="/s/\${s.id}" class="btn-text" target="_blank">View</a>
               <button class="btn-text" onclick="openEditModal('\${s.id}', '\${escapeHtml(s.title).replace(/'/g, "\\\\'")}', '\${s.visibility}')">Edit</button>
               <button class="btn-icon btn-danger" onclick="openDeleteModal('\${s.id}')" title="Delete">×</button>
             </div>
@@ -2421,51 +2421,86 @@ main h1 {
 
 .modal-content label {
   display: block;
-  color: var(--text-muted);
-  font-size: 0.875rem;
-  margin-bottom: 0.5rem;
+  color: var(--text);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  margin-bottom: 1.25rem;
 }
 
-.modal-content input[type="text"] {
+.modal-content input[type="text"],
+.modal-content input[type="password"],
+.modal-content select {
   width: 100%;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 0.75rem;
+  padding: 0.625rem 0.75rem;
   font-family: var(--font-mono);
+  font-size: 0.875rem;
   color: var(--text);
-  margin-bottom: 1.5rem;
+  margin-top: 0.5rem;
 }
 
-.modal-content input:focus {
+.modal-content select {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%238b949e' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.75rem center;
+  padding-right: 2rem;
+  cursor: pointer;
+}
+
+.modal-content input:focus,
+.modal-content select:focus {
   outline: none;
   border-color: var(--accent);
+}
+
+.modal-content select option {
+  background: var(--bg-secondary);
+  color: var(--text);
 }
 
 .modal-actions {
   display: flex;
   gap: 0.75rem;
   justify-content: flex-end;
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
 }
 
 .edit-error {
-  background: rgba(248, 81, 73, 0.15);
-  border: 1px solid var(--red);
+  background: rgba(248, 81, 73, 0.1);
+  border: 1px solid rgba(248, 81, 73, 0.3);
   color: var(--red);
-  padding: 0.75rem;
+  padding: 0.75rem 1rem;
   border-radius: 6px;
-  font-size: 0.875rem;
+  font-size: 0.8125rem;
   margin-bottom: 1rem;
 }
 
 .field-hint {
   font-size: 0.75rem;
   color: var(--text-muted);
-  margin-top: 0.25rem;
+  margin-top: 0.375rem;
+  line-height: 1.4;
 }
 
 #password-fields {
-  margin-top: 0.5rem;
+  background: var(--bg-tertiary);
+  border-radius: 8px;
+  padding: 1rem;
+  margin-top: -0.25rem;
+  margin-bottom: 0.5rem;
+}
+
+#password-fields label {
+  margin-bottom: 0;
+}
+
+#password-fields .field-hint {
+  margin-top: 0.75rem;
 }
 
 .btn-secondary, .btn-primary, .btn-danger {
