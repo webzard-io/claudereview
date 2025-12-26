@@ -4,7 +4,7 @@ import { logger } from 'hono/logger';
 import { nanoid } from 'nanoid';
 import { z } from 'zod';
 import { db, sessions, users, apiKeys, type NewSession, type Session } from './db/index.ts';
-import { eq } from 'drizzle-orm';
+import { eq, sql, desc, count } from 'drizzle-orm';
 
 const app = new Hono();
 
@@ -151,6 +151,91 @@ app.get('/s/:id', async (c) => {
 // Landing page
 app.get('/', (c) => {
   return c.html(generateLandingHtml());
+});
+
+// Admin middleware
+const requireAdmin = async (c: any, next: any) => {
+  const adminKey = process.env.ADMIN_KEY;
+  if (!adminKey) {
+    return c.json({ error: 'Admin not configured' }, 500);
+  }
+
+  const authHeader = c.req.header('Authorization');
+  const queryKey = c.req.query('key');
+  const providedKey = authHeader?.replace('Bearer ', '') || queryKey;
+
+  if (providedKey !== adminKey) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+
+  await next();
+};
+
+// Admin API: Get analytics
+app.get('/api/admin/stats', requireAdmin, async (c) => {
+  if (!db) {
+    return c.json({ error: 'Database not configured' }, 500);
+  }
+
+  try {
+    // Total sessions
+    const [totalResult] = await db.select({ count: count() }).from(sessions);
+    const totalSessions = totalResult?.count || 0;
+
+    // Total views
+    const [viewsResult] = await db.select({
+      total: sql<number>`COALESCE(SUM(${sessions.viewCount}), 0)`
+    }).from(sessions);
+    const totalViews = viewsResult?.total || 0;
+
+    // Public vs private
+    const visibilityStats = await db.select({
+      visibility: sessions.visibility,
+      count: count(),
+    }).from(sessions).groupBy(sessions.visibility);
+
+    // Recent sessions (last 20)
+    const recentSessions = await db.select({
+      id: sessions.id,
+      title: sessions.title,
+      visibility: sessions.visibility,
+      viewCount: sessions.viewCount,
+      createdAt: sessions.createdAt,
+    }).from(sessions).orderBy(desc(sessions.createdAt)).limit(20);
+
+    // Sessions per day (last 30 days)
+    const sessionsPerDay = await db.select({
+      date: sql<string>`DATE(${sessions.createdAt})`,
+      count: count(),
+    }).from(sessions)
+      .where(sql`${sessions.createdAt} > NOW() - INTERVAL '30 days'`)
+      .groupBy(sql`DATE(${sessions.createdAt})`)
+      .orderBy(sql`DATE(${sessions.createdAt})`);
+
+    // Top viewed sessions
+    const topViewed = await db.select({
+      id: sessions.id,
+      title: sessions.title,
+      viewCount: sessions.viewCount,
+    }).from(sessions).orderBy(desc(sessions.viewCount)).limit(10);
+
+    return c.json({
+      totalSessions,
+      totalViews,
+      visibilityStats,
+      recentSessions,
+      sessionsPerDay,
+      topViewed,
+    });
+  } catch (error) {
+    console.error('Admin stats error:', error);
+    return c.json({ error: 'Failed to get stats' }, 500);
+  }
+});
+
+// Admin dashboard page
+app.get('/admin', requireAdmin, async (c) => {
+  return c.html(generateAdminHtml());
 });
 
 // Generate viewer HTML that fetches and decrypts on client side
@@ -316,6 +401,130 @@ ccshare preview --last</code></pre>
       <span class="dim">Built for developers who use Claude Code</span>
     </footer>
   </div>
+</body>
+</html>`;
+}
+
+function generateAdminHtml(): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Admin Dashboard - claudereview</title>
+  <style>${ADMIN_CSS}</style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="logo">
+        <span class="logo-icon">◈</span>
+        <span class="logo-text">claude<span class="accent">review</span></span>
+        <span class="admin-badge">admin</span>
+      </div>
+    </header>
+
+    <main>
+      <div class="stats-grid" id="stats-grid">
+        <div class="stat-card">
+          <div class="stat-value" id="total-sessions">-</div>
+          <div class="stat-label">Total Sessions</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="total-views">-</div>
+          <div class="stat-label">Total Views</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="public-count">-</div>
+          <div class="stat-label">Public</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="private-count">-</div>
+          <div class="stat-label">Private</div>
+        </div>
+      </div>
+
+      <section class="section">
+        <h2>Sessions per Day (Last 30 days)</h2>
+        <div class="chart" id="chart"></div>
+      </section>
+
+      <section class="section">
+        <h2>Top Viewed Sessions</h2>
+        <table class="data-table" id="top-viewed">
+          <thead>
+            <tr><th>Title</th><th>Views</th><th>Link</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </section>
+
+      <section class="section">
+        <h2>Recent Sessions</h2>
+        <table class="data-table" id="recent-sessions">
+          <thead>
+            <tr><th>Title</th><th>Type</th><th>Views</th><th>Created</th><th>Link</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </section>
+    </main>
+  </div>
+  <script>
+    (async function() {
+      const key = new URLSearchParams(window.location.search).get('key');
+      if (!key) {
+        document.body.innerHTML = '<div style="padding:2rem;color:#f85149;">Missing admin key</div>';
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/admin/stats?key=' + key);
+        if (!res.ok) throw new Error('Unauthorized');
+        const data = await res.json();
+
+        document.getElementById('total-sessions').textContent = data.totalSessions.toLocaleString();
+        document.getElementById('total-views').textContent = data.totalViews.toLocaleString();
+
+        const publicCount = data.visibilityStats.find(s => s.visibility === 'public')?.count || 0;
+        const privateCount = data.visibilityStats.find(s => s.visibility === 'private')?.count || 0;
+        document.getElementById('public-count').textContent = publicCount.toLocaleString();
+        document.getElementById('private-count').textContent = privateCount.toLocaleString();
+
+        // Render chart
+        const chart = document.getElementById('chart');
+        const maxCount = Math.max(...data.sessionsPerDay.map(d => d.count), 1);
+        chart.innerHTML = data.sessionsPerDay.map(d => {
+          const height = (d.count / maxCount * 100).toFixed(0);
+          const date = new Date(d.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+          return '<div class="bar" style="height:' + height + '%"><span class="bar-value">' + d.count + '</span><span class="bar-label">' + date + '</span></div>';
+        }).join('');
+
+        // Top viewed
+        const topViewedBody = document.querySelector('#top-viewed tbody');
+        topViewedBody.innerHTML = data.topViewed.map(s =>
+          '<tr><td>' + escapeHtml(s.title?.slice(0,50) || 'Untitled') + '</td><td>' + s.viewCount + '</td><td><a href="/s/' + s.id + '">View</a></td></tr>'
+        ).join('');
+
+        // Recent sessions
+        const recentBody = document.querySelector('#recent-sessions tbody');
+        recentBody.innerHTML = data.recentSessions.map(s => {
+          const date = new Date(s.createdAt).toLocaleDateString();
+          const type = s.visibility === 'private' ? '🔐' : '🔗';
+          return '<tr><td>' + escapeHtml(s.title?.slice(0,50) || 'Untitled') + '</td><td>' + type + '</td><td>' + s.viewCount + '</td><td>' + date + '</td><td><a href="/s/' + s.id + '">View</a></td></tr>';
+        }).join('');
+
+      } catch (err) {
+        document.body.innerHTML = '<div style="padding:2rem;color:#f85149;">Error: ' + err.message + '</div>';
+      }
+
+      function escapeHtml(str) {
+        const div = document.createElement('div');
+        div.textContent = str || '';
+        return div.innerHTML;
+      }
+    })();
+  </script>
 </body>
 </html>`;
 }
@@ -658,6 +867,180 @@ footer a:hover { text-decoration: underline; }
 @media (max-width: 640px) {
   main h1 { font-size: 1.75rem; }
   .features { grid-template-columns: 1fr; gap: 1.5rem; }
+}
+`;
+
+const ADMIN_CSS = `
+:root {
+  --bg: #0d1117;
+  --bg-secondary: #161b22;
+  --bg-tertiary: #21262d;
+  --border: #30363d;
+  --text: #c9d1d9;
+  --text-muted: #8b949e;
+  --text-bright: #f0f6fc;
+  --accent: #58a6ff;
+  --green: #3fb950;
+  --purple: #a371f7;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', Menlo, monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-mono);
+  min-height: 100vh;
+}
+
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 2rem;
+}
+
+header {
+  margin-bottom: 2rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.logo-icon { color: var(--accent); font-size: 1.5rem; }
+.logo-text { font-size: 1.25rem; color: var(--text-muted); }
+.accent { color: var(--accent); }
+
+.admin-badge {
+  background: var(--purple);
+  color: white;
+  font-size: 0.75rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  margin-left: 0.5rem;
+  font-weight: 500;
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1rem;
+  margin-bottom: 2rem;
+}
+
+.stat-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1.5rem;
+  text-align: center;
+}
+
+.stat-value {
+  font-size: 2rem;
+  font-weight: 600;
+  color: var(--text-bright);
+  font-family: var(--font-sans);
+}
+
+.stat-label {
+  color: var(--text-muted);
+  font-size: 0.875rem;
+  margin-top: 0.5rem;
+}
+
+.section {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1.5rem;
+  margin-bottom: 1.5rem;
+}
+
+.section h2 {
+  font-family: var(--font-sans);
+  font-size: 1rem;
+  color: var(--text-bright);
+  margin-bottom: 1rem;
+}
+
+.chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  height: 150px;
+  padding: 1rem 0;
+}
+
+.bar {
+  flex: 1;
+  min-width: 20px;
+  background: linear-gradient(to top, var(--accent), var(--purple));
+  border-radius: 4px 4px 0 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  min-height: 4px;
+}
+
+.bar-value {
+  font-size: 0.625rem;
+  color: var(--text-bright);
+  position: absolute;
+  top: -18px;
+}
+
+.bar-label {
+  font-size: 0.5rem;
+  color: var(--text-muted);
+  position: absolute;
+  bottom: -18px;
+  white-space: nowrap;
+  transform: rotate(-45deg);
+  transform-origin: top left;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.data-table th,
+.data-table td {
+  padding: 0.75rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+.data-table th {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.data-table td {
+  color: var(--text);
+}
+
+.data-table a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.data-table a:hover {
+  text-decoration: underline;
+}
+
+@media (max-width: 768px) {
+  .stats-grid { grid-template-columns: repeat(2, 1fr); }
 }
 `;
 
