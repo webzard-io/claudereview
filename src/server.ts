@@ -491,6 +491,80 @@ app.delete('/api/keys/:id', async (c) => {
   return c.json({ success: true });
 });
 
+// Feedback types
+const feedbackTypes: Record<string, { label: string; emoji: string }> = {
+  feedback: { label: 'General Feedback', emoji: '💬' },
+  feature: { label: 'Feature Request', emoji: '✨' },
+  bug: { label: 'Bug Report', emoji: '🐛' },
+};
+
+// API: Submit feedback (creates GitHub issue)
+app.post('/api/feedback', async (c) => {
+  try {
+    const body = await c.req.json();
+    const { type, message, email } = body;
+
+    if (!type || !message) {
+      return c.json({ error: 'Type and message are required' }, 400);
+    }
+
+    if (!feedbackTypes[type]) {
+      return c.json({ error: 'Invalid feedback type' }, 400);
+    }
+
+    if (message.length > 5000) {
+      return c.json({ error: 'Message too long (max 5000 characters)' }, 400);
+    }
+
+    // Create GitHub issue if token is configured
+    let issueUrl: string | null = null;
+    if (GITHUB_TOKEN) {
+      const { label, emoji } = feedbackTypes[type];
+      const title = `${emoji} ${label}: ${message.slice(0, 60)}${message.length > 60 ? '...' : ''}`;
+      const issueBody = `## ${label}
+
+${message}
+
+---
+${email ? `**Contact:** ${email}` : '_No email provided_'}
+_Submitted via claudereview.com feedback form_`;
+
+      try {
+        const res = await fetch('https://api.github.com/repos/vignesh07/claudereview/issues', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${GITHUB_TOKEN}`,
+            'Accept': 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            title,
+            body: issueBody,
+            labels: [type],
+          }),
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          issueUrl = data.html_url;
+        } else {
+          console.error('GitHub issue creation failed:', await res.text());
+        }
+      } catch (e) {
+        console.error('GitHub issue creation error:', e);
+      }
+    } else {
+      console.warn('GITHUB_TOKEN not set - feedback not saved to GitHub');
+    }
+
+    return c.json({ ok: true, issueUrl });
+  } catch (error) {
+    console.error('Feedback submission error:', error);
+    return c.json({ error: 'Failed to submit feedback' }, 500);
+  }
+});
+
 // Upload schema
 const uploadSchema = z.object({
   encryptedBlob: z.string().max(MAX_UPLOAD_SIZE, 'Session too large (max 100MB)'),
@@ -1239,6 +1313,52 @@ Return the URL to me.</pre>
     </footer>
   </div>
 
+  <!-- Feedback Button -->
+  <button id="feedback-btn" class="feedback-btn" onclick="openFeedback()">
+    <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+    </svg>
+    Feedback
+  </button>
+
+  <!-- Feedback Modal -->
+  <div id="feedback-modal" class="feedback-modal" onclick="if(event.target===this)closeFeedback()">
+    <div class="feedback-dialog">
+      <div class="feedback-header">
+        <h2>Share Feedback</h2>
+        <button class="feedback-close" onclick="closeFeedback()">×</button>
+      </div>
+      <div id="feedback-body" class="feedback-body">
+        <form id="feedback-form" onsubmit="submitFeedback(event)">
+          <div class="feedback-field">
+            <label>Type</label>
+            <div class="feedback-types">
+              <button type="button" class="feedback-type active" data-type="feedback">💬 Feedback</button>
+              <button type="button" class="feedback-type" data-type="feature">✨ Feature</button>
+              <button type="button" class="feedback-type" data-type="bug">🐛 Bug</button>
+            </div>
+          </div>
+          <div class="feedback-field">
+            <label for="feedback-message">Message</label>
+            <textarea id="feedback-message" rows="4" placeholder="What's on your mind?" required></textarea>
+          </div>
+          <div class="feedback-field">
+            <label for="feedback-email">Email <span class="optional">(optional, for follow-up)</span></label>
+            <input type="email" id="feedback-email" placeholder="you@example.com">
+          </div>
+          <div id="feedback-error" class="feedback-error"></div>
+          <button type="submit" id="feedback-submit" class="feedback-submit">Submit</button>
+        </form>
+      </div>
+      <div id="feedback-success" class="feedback-success" style="display:none">
+        <div class="success-icon">✓</div>
+        <h3>Thank you!</h3>
+        <p>Your feedback has been submitted.</p>
+        <button onclick="closeFeedback()" class="feedback-submit">Close</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     function toggleTheme() {
       const html = document.documentElement;
@@ -1280,6 +1400,81 @@ Return the URL to me.</pre>
     window.addEventListener('scroll', () => {
       document.querySelector('header').classList.toggle('scrolled', window.scrollY > 10);
     });
+
+    // Feedback modal
+    let feedbackType = 'feedback';
+
+    function openFeedback() {
+      document.getElementById('feedback-modal').classList.add('open');
+      document.getElementById('feedback-body').style.display = 'block';
+      document.getElementById('feedback-success').style.display = 'none';
+      document.getElementById('feedback-error').textContent = '';
+      document.body.style.overflow = 'hidden';
+    }
+
+    function closeFeedback() {
+      document.getElementById('feedback-modal').classList.remove('open');
+      document.body.style.overflow = '';
+      // Reset form after animation
+      setTimeout(() => {
+        document.getElementById('feedback-form').reset();
+        document.querySelectorAll('.feedback-type').forEach(b => b.classList.remove('active'));
+        document.querySelector('.feedback-type[data-type="feedback"]').classList.add('active');
+        feedbackType = 'feedback';
+      }, 200);
+    }
+
+    // Type selector
+    document.querySelectorAll('.feedback-type').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.feedback-type').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        feedbackType = btn.dataset.type;
+      });
+    });
+
+    // Escape to close
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape') closeFeedback();
+    });
+
+    async function submitFeedback(e) {
+      e.preventDefault();
+      const message = document.getElementById('feedback-message').value.trim();
+      const email = document.getElementById('feedback-email').value.trim();
+      const errorEl = document.getElementById('feedback-error');
+      const submitBtn = document.getElementById('feedback-submit');
+
+      if (!message) {
+        errorEl.textContent = 'Please enter a message';
+        return;
+      }
+
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Submitting...';
+      errorEl.textContent = '';
+
+      try {
+        const res = await fetch('/api/feedback', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ type: feedbackType, message, email: email || null })
+        });
+
+        if (!res.ok) {
+          const data = await res.json();
+          throw new Error(data.error || 'Failed to submit');
+        }
+
+        document.getElementById('feedback-body').style.display = 'none';
+        document.getElementById('feedback-success').style.display = 'block';
+      } catch (err) {
+        errorEl.textContent = err.message || 'Something went wrong';
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Submit';
+      }
+    }
   </script>
 </body>
 </html>`;
@@ -3994,6 +4189,246 @@ header {
 @media (max-width: 480px) {
   .stats-grid { grid-template-columns: 1fr; }
   .header-left { flex-direction: column; align-items: flex-start; gap: 0.5rem; }
+}
+
+/* Feedback Button */
+.feedback-btn {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 20px;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 24px;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  transition: all 0.2s;
+  z-index: 100;
+}
+
+.feedback-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.2);
+}
+
+/* Feedback Modal */
+.feedback-modal {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(4px);
+  opacity: 0;
+  visibility: hidden;
+  transition: all 0.2s;
+  z-index: 1000;
+}
+
+.feedback-modal.open {
+  opacity: 1;
+  visibility: visible;
+}
+
+.feedback-dialog {
+  width: 100%;
+  max-width: 420px;
+  background: var(--bg-secondary);
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.2);
+  transform: scale(0.95);
+  transition: transform 0.2s;
+}
+
+.feedback-modal.open .feedback-dialog {
+  transform: scale(1);
+}
+
+.feedback-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.feedback-header h2 {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.feedback-close {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  font-size: 20px;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 4px;
+  transition: all 0.15s;
+}
+
+.feedback-close:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.feedback-body {
+  padding: 20px;
+}
+
+.feedback-field {
+  margin-bottom: 16px;
+}
+
+.feedback-field label {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+
+.feedback-field .optional {
+  font-weight: 400;
+  color: var(--text-muted);
+  opacity: 0.7;
+}
+
+.feedback-types {
+  display: flex;
+  gap: 8px;
+}
+
+.feedback-type {
+  flex: 1;
+  padding: 10px 12px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.feedback-type:hover {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
+.feedback-type.active {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: white;
+}
+
+.feedback-body textarea,
+.feedback-body input[type="email"] {
+  width: 100%;
+  padding: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  color: var(--text-primary);
+  resize: none;
+  transition: border-color 0.15s;
+  box-sizing: border-box;
+}
+
+.feedback-body textarea:focus,
+.feedback-body input[type="email"]:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.feedback-body textarea::placeholder,
+.feedback-body input[type="email"]::placeholder {
+  color: var(--text-muted);
+  opacity: 0.6;
+}
+
+.feedback-error {
+  font-size: 13px;
+  color: #e74c3c;
+  margin-bottom: 12px;
+  min-height: 18px;
+}
+
+.feedback-submit {
+  width: 100%;
+  padding: 12px;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.feedback-submit:hover {
+  opacity: 0.9;
+}
+
+.feedback-submit:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.feedback-success {
+  padding: 40px 20px;
+  text-align: center;
+}
+
+.feedback-success .success-icon {
+  width: 48px;
+  height: 48px;
+  margin: 0 auto 16px;
+  background: #27ae60;
+  color: white;
+  border-radius: 50%;
+  font-size: 24px;
+  line-height: 48px;
+}
+
+.feedback-success h3 {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0 0 8px;
+}
+
+.feedback-success p {
+  font-size: 14px;
+  color: var(--text-muted);
+  margin: 0 0 24px;
+}
+
+.feedback-success .feedback-submit {
+  max-width: 120px;
+  margin: 0 auto;
 }
 `;
 
