@@ -19,8 +19,8 @@ const GITHUB_CLIENT_SECRET = process.env.GITHUB_CLIENT_SECRET;
 const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
 const SESSION_SECRET = process.env.SESSION_SECRET || 'dev-secret-change-in-production';
 
-// Maximum upload size (10MB)
-const MAX_UPLOAD_SIZE = 10 * 1024 * 1024;
+// Maximum upload size (100MB - PostgreSQL TEXT can handle up to 1GB)
+const MAX_UPLOAD_SIZE = 100 * 1024 * 1024;
 
 // Simple session store (in production, use Redis or database)
 const sessionStore = new Map<string, { userId: string; expiresAt: number }>();
@@ -498,7 +498,7 @@ app.delete('/api/keys/:id', async (c) => {
 
 // Upload schema
 const uploadSchema = z.object({
-  encryptedBlob: z.string().max(MAX_UPLOAD_SIZE, 'Session too large (max 10MB)'),
+  encryptedBlob: z.string().max(MAX_UPLOAD_SIZE, 'Session too large (max 100MB)'),
   iv: z.string().max(100),
   salt: z.string().max(100).optional(),
   ownerKey: z.string().max(100).optional(), // encryption key for owner to view later
