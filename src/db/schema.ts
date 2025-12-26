@@ -13,10 +13,10 @@ export const users = pgTable('users', {
 export const sessions = pgTable('sessions', {
   id: text('id').primaryKey(), // short nanoid for URLs
   userId: text('user_id').references(() => users.id), // nullable for anonymous uploads
-  title: text('title').notNull(),
-  messageCount: integer('message_count').notNull(),
-  toolCount: integer('tool_count').notNull(),
-  durationSeconds: integer('duration_seconds').notNull(),
+  title: text('title'), // nullable for private sessions (no metadata stored)
+  messageCount: integer('message_count'), // nullable for private sessions
+  toolCount: integer('tool_count'), // nullable for private sessions
+  durationSeconds: integer('duration_seconds'), // nullable for private sessions
   visibility: text('visibility').notNull().$type<'public' | 'private'>(),
   encryptedBlob: text('encrypted_blob').notNull(), // base64 encoded
   iv: text('iv').notNull(), // initialization vector

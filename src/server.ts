@@ -306,8 +306,14 @@ app.patch('/api/sessions/:id', async (c) => {
   const updates: Partial<Session> = {};
   let newKey: string | undefined;
 
-  // Handle title update
+  // Determine the final visibility (current or changing to)
+  const finalVisibility = body.visibility || session.visibility;
+
+  // Handle title update - block for private sessions (metadata not stored)
   if (body.title) {
+    if (finalVisibility === 'private') {
+      return c.json({ error: 'Cannot set title for private sessions' }, 400);
+    }
     updates.title = body.title.slice(0, 200);
   }
 
@@ -343,6 +349,11 @@ app.patch('/api/sessions/:id', async (c) => {
         updates.salt = encrypted.salt;
         updates.ownerKey = null; // No key storage for password-protected sessions
         updates.visibility = 'private';
+        // Clear all metadata for private sessions
+        updates.title = null;
+        updates.messageCount = null;
+        updates.toolCount = null;
+        updates.durationSeconds = null;
       } else {
         // Changing to public: encrypt with random key
         const encrypted = encryptForPublic(decryptedData);
@@ -352,6 +363,19 @@ app.patch('/api/sessions/:id', async (c) => {
         updates.ownerKey = encrypted.key; // Store key for owner access
         updates.visibility = 'public';
         newKey = encrypted.key; // Return to client for URL
+
+        // Restore metadata from decrypted session when converting to public
+        try {
+          const sessionData = JSON.parse(decryptedData);
+          if (sessionData.title) updates.title = sessionData.title.slice(0, 200);
+          if (sessionData.metadata) {
+            updates.messageCount = sessionData.metadata.messageCount ?? null;
+            updates.toolCount = sessionData.metadata.toolCount ?? null;
+            updates.durationSeconds = sessionData.metadata.durationSeconds ?? null;
+          }
+        } catch {
+          // If parsing fails, leave metadata as null
+        }
       }
     } catch (err) {
       console.error('Re-encryption failed:', err);
