@@ -1,29 +1,23 @@
-# claudereview MCP Server
+# claudereview-mcp
 
-Share Claude Code sessions directly from Claude using the Model Context Protocol.
+MCP server for sharing Claude Code sessions via [claudereview.com](https://claudereview.com).
 
 ## Installation
 
-Add to your Claude settings (`~/.claude/settings.json`):
-
-```json
-{
-  "mcpServers": {
-    "claudereview": {
-      "command": "bun",
-      "args": ["run", "/path/to/claudereview/mcp/server.ts"]
-    }
-  }
-}
+```bash
+npm install -g claudereview-mcp
+# or
+bun add -g claudereview-mcp
 ```
 
-Or if installed globally:
+Then add to your Claude settings (`~/.claude/settings.json`):
 
 ```json
 {
   "mcpServers": {
     "claudereview": {
-      "command": "claudereview-mcp"
+      "command": "bunx",
+      "args": ["claudereview-mcp"]
     }
   }
 }
