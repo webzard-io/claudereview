@@ -254,6 +254,7 @@ app.patch('/api/sessions/:id', async (c) => {
     title?: string;
     visibility?: 'public' | 'private';
     password?: string;
+    currentPassword?: string;
   };
 
   if (!db) {
@@ -279,14 +280,23 @@ app.patch('/api/sessions/:id', async (c) => {
 
   // Handle visibility change (requires re-encryption)
   if (body.visibility && body.visibility !== session.visibility) {
-    // Need ownerKey to decrypt current data
-    if (!session.ownerKey) {
-      return c.json({ error: 'Cannot change visibility: encryption key not available' }, 400);
-    }
+    let decryptedData: string;
 
     try {
-      // Decrypt current data
-      const decryptedData = decrypt(session.encryptedBlob, session.iv, session.ownerKey);
+      // Decrypt based on current session type
+      if (session.visibility === 'private' && session.salt) {
+        // Private session: need current password to decrypt
+        if (!body.currentPassword) {
+          return c.json({ error: 'Current password required to change private session' }, 400);
+        }
+        const derivedKey = deriveKey(body.currentPassword, session.salt);
+        decryptedData = decrypt(session.encryptedBlob, session.iv, derivedKey);
+      } else if (session.ownerKey) {
+        // Public session with ownerKey
+        decryptedData = decrypt(session.encryptedBlob, session.iv, session.ownerKey);
+      } else {
+        return c.json({ error: 'Cannot change visibility: encryption key not available' }, 400);
+      }
 
       if (body.visibility === 'private') {
         // Changing to private: encrypt with password
@@ -312,7 +322,7 @@ app.patch('/api/sessions/:id', async (c) => {
       }
     } catch (err) {
       console.error('Re-encryption failed:', err);
-      return c.json({ error: 'Failed to change visibility' }, 500);
+      return c.json({ error: 'Failed to change visibility. Wrong password?' }, 500);
     }
   }
 
@@ -920,9 +930,16 @@ function generateDashboardHtml(user: User): string {
             <option value="private">Private (password protected)</option>
           </select>
         </label>
-        <div id="password-fields" class="hidden">
+        <div id="current-password-fields" class="hidden">
           <label>
-            Password
+            Current Password
+            <input type="password" id="edit-current-password" placeholder="Enter current password">
+          </label>
+          <p class="field-hint">Required to change visibility of a private session.</p>
+        </div>
+        <div id="new-password-fields" class="hidden">
+          <label>
+            New Password
             <input type="password" id="edit-password" placeholder="Enter password for private session">
           </label>
           <p class="field-hint">Required when changing to private. Anyone with the password can view.</p>
@@ -1069,6 +1086,7 @@ function generateDashboardHtml(user: User): string {
       document.getElementById('edit-title').value = title;
       document.getElementById('edit-visibility').value = visibility;
       document.getElementById('edit-password').value = '';
+      document.getElementById('edit-current-password').value = '';
       document.getElementById('edit-error').classList.add('hidden');
       updatePasswordFieldVisibility();
       document.getElementById('edit-modal').classList.remove('hidden');
@@ -1076,12 +1094,21 @@ function generateDashboardHtml(user: User): string {
 
     function updatePasswordFieldVisibility() {
       const newVisibility = document.getElementById('edit-visibility').value;
-      const passwordFields = document.getElementById('password-fields');
-      // Show password field when changing TO private
-      if (newVisibility === 'private' && currentEditVisibility === 'public') {
-        passwordFields.classList.remove('hidden');
+      const currentPasswordFields = document.getElementById('current-password-fields');
+      const newPasswordFields = document.getElementById('new-password-fields');
+
+      // Show current password when changing FROM private
+      if (currentEditVisibility === 'private' && newVisibility !== currentEditVisibility) {
+        currentPasswordFields.classList.remove('hidden');
       } else {
-        passwordFields.classList.add('hidden');
+        currentPasswordFields.classList.add('hidden');
+      }
+
+      // Show new password when changing TO private
+      if (newVisibility === 'private' && currentEditVisibility === 'public') {
+        newPasswordFields.classList.remove('hidden');
+      } else {
+        newPasswordFields.classList.add('hidden');
       }
     }
 
@@ -1108,10 +1135,18 @@ function generateDashboardHtml(user: User): string {
       const title = document.getElementById('edit-title').value;
       const visibility = document.getElementById('edit-visibility').value;
       const password = document.getElementById('edit-password').value;
+      const currentPassword = document.getElementById('edit-current-password').value;
       const errorEl = document.getElementById('edit-error');
       errorEl.classList.add('hidden');
 
-      // Validate: password required when changing to private
+      // Validate: current password required when changing FROM private
+      if (currentEditVisibility === 'private' && visibility !== currentEditVisibility && !currentPassword) {
+        errorEl.textContent = 'Current password is required to change visibility';
+        errorEl.classList.remove('hidden');
+        return;
+      }
+
+      // Validate: new password required when changing TO private
       if (visibility === 'private' && currentEditVisibility === 'public' && !password) {
         errorEl.textContent = 'Password is required when making a session private';
         errorEl.classList.remove('hidden');
@@ -1123,6 +1158,7 @@ function generateDashboardHtml(user: User): string {
         if (visibility !== currentEditVisibility) {
           body.visibility = visibility;
           if (password) body.password = password;
+          if (currentPassword) body.currentPassword = currentPassword;
         }
 
         const res = await fetch('/api/sessions/' + currentEditId, {
@@ -2487,7 +2523,8 @@ main h1 {
   line-height: 1.4;
 }
 
-#password-fields {
+#current-password-fields,
+#new-password-fields {
   background: var(--bg-tertiary);
   border-radius: 8px;
   padding: 1rem;
@@ -2495,11 +2532,13 @@ main h1 {
   margin-bottom: 0.5rem;
 }
 
-#password-fields label {
+#current-password-fields label,
+#new-password-fields label {
   margin-bottom: 0;
 }
 
-#password-fields .field-hint {
+#current-password-fields .field-hint,
+#new-password-fields .field-hint {
   margin-top: 0.75rem;
 }
 
