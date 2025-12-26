@@ -1,8 +1,12 @@
 import { readdir, stat, readFile } from 'fs/promises';
 import { join, basename } from 'path';
 import { homedir } from 'os';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 import type { LocalSession, ParsedSession } from './types.ts';
 import { parseSessionFile, parseSessionContent } from './parser.ts';
+
+const execAsync = promisify(exec);
 
 const CLAUDE_PROJECTS_DIR = join(homedir(), '.claude', 'projects');
 
@@ -181,4 +185,69 @@ export function formatRelativeTime(date: Date): string {
   if (diffDays < 7) return `${diffDays}d ago`;
 
   return date.toLocaleDateString();
+}
+
+/**
+ * Git context information
+ */
+export interface GitContext {
+  gitRepo?: string;
+  gitBranch?: string;
+  gitCommit?: string;
+}
+
+/**
+ * Detect git context from a project directory
+ */
+export async function detectGitContext(projectPath: string): Promise<GitContext> {
+  const context: GitContext = {};
+
+  try {
+    // Get remote origin URL
+    const { stdout: remoteUrl } = await execAsync('git remote get-url origin', { cwd: projectPath });
+    context.gitRepo = remoteUrl.trim();
+  } catch {
+    // Not a git repo or no remote
+  }
+
+  try {
+    // Get current branch
+    const { stdout: branch } = await execAsync('git branch --show-current', { cwd: projectPath });
+    context.gitBranch = branch.trim() || undefined;
+  } catch {
+    // No branch info
+  }
+
+  try {
+    // Get current commit hash
+    const { stdout: commit } = await execAsync('git rev-parse HEAD', { cwd: projectPath });
+    context.gitCommit = commit.trim();
+  } catch {
+    // No commit info
+  }
+
+  return context;
+}
+
+/**
+ * Parse a session with git context
+ */
+export async function parseSessionWithGit(sessionId: string): Promise<ParsedSession> {
+  const session = await getSession(sessionId);
+  if (!session) {
+    throw new Error(`Session not found: ${sessionId}`);
+  }
+
+  const parsed = await parseSessionFile(session.path);
+
+  // Try to detect git context from the project directory
+  const gitContext = await detectGitContext(session.projectPath);
+
+  // Merge git context into metadata
+  parsed.metadata = {
+    ...parsed.metadata,
+    ...gitContext,
+  };
+
+  return parsed;
 }

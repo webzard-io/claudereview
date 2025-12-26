@@ -3,7 +3,7 @@ import { Command } from 'commander';
 import { writeFile, mkdir } from 'fs/promises';
 import { join } from 'path';
 import { homedir } from 'os';
-import { listSessions, getSession, getLastSession, parseSession, parseLastSession, formatDuration, formatRelativeTime } from './session.ts';
+import { listSessions, getSession, getLastSession, parseSession, parseLastSession, parseSessionWithGit, formatDuration, formatRelativeTime, detectGitContext } from './session.ts';
 import { renderSessionToHtml } from './renderer.ts';
 import { encryptForPublic, encryptForPrivate } from './crypto.ts';
 
@@ -22,6 +22,37 @@ const colors = {
 };
 
 const c = (color: keyof typeof colors, text: string) => `${colors[color]}${text}${colors.reset}`;
+
+/**
+ * Parse a session with git context
+ */
+async function parseWithGitContext(sessionId?: string, last?: boolean) {
+  let session;
+  let projectPath: string | undefined;
+
+  if (last || !sessionId) {
+    const localSession = await getLastSession();
+    if (!localSession) throw new Error('No sessions found');
+    session = await parseSession(localSession.id);
+    projectPath = localSession.projectPath;
+  } else {
+    const localSession = await getSession(sessionId);
+    if (!localSession) throw new Error(`Session not found: ${sessionId}`);
+    session = await parseSession(localSession.id);
+    projectPath = localSession.projectPath;
+  }
+
+  // Add git context
+  if (projectPath) {
+    const gitContext = await detectGitContext(projectPath);
+    session.metadata = {
+      ...session.metadata,
+      ...gitContext,
+    };
+  }
+
+  return session;
+}
 
 program
   .name('ccshare')
@@ -84,13 +115,7 @@ program
   .option('--embed', 'Embed mode (compact, no chrome)')
   .action(async (sessionId, options) => {
     try {
-      let session;
-
-      if (options.last || !sessionId) {
-        session = await parseLastSession();
-      } else {
-        session = await parseSession(sessionId);
-      }
+      const session = await parseWithGitContext(sessionId, options.last);
 
       // Override title if provided
       if (options.title) {
@@ -137,13 +162,7 @@ program
   .option('--private <password>', 'Create password-protected export')
   .action(async (sessionId, options) => {
     try {
-      let session;
-
-      if (options.last || !sessionId) {
-        session = await parseLastSession();
-      } else {
-        session = await parseSession(sessionId);
-      }
+      const session = await parseWithGitContext(sessionId, options.last);
 
       // Override title if provided
       if (options.title) {
@@ -200,13 +219,7 @@ program
   .option('-q, --quiet', 'Only output the URL')
   .action(async (sessionId, options) => {
     try {
-      let session;
-
-      if (options.last || !sessionId) {
-        session = await parseLastSession();
-      } else {
-        session = await parseSession(sessionId);
-      }
+      const session = await parseWithGitContext(sessionId, options.last);
 
       // Override title if provided
       if (options.title) {

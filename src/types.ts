@@ -56,6 +56,7 @@ export interface SessionMetadata {
   // Git context if detectable
   gitRepo?: string;
   gitBranch?: string;
+  gitCommit?: string;
 }
 
 export interface ParsedMessage {

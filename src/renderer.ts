@@ -160,23 +160,31 @@ function renderHeader(session: ParsedSession): string {
         <span class="logo-text">claudereview</span>
       </a>
       <div class="header-actions">
-        <button id="theme-toggle" class="action-btn" title="Toggle theme">
+        <button id="theme-toggle" class="action-btn labeled" title="Toggle light/dark theme">
           <span class="action-icon theme-icon">◐</span>
+          <span class="action-label">Theme</span>
         </button>
-        <button id="collapse-all-btn" class="action-btn" title="Collapse all (C)">
-          <span class="action-icon">⊟</span>
+        <button id="collapse-all-btn" class="action-btn labeled" title="Collapse all tool outputs (C)">
+          <span class="action-icon">−</span>
+          <span class="action-label">Collapse</span>
         </button>
-        <button id="expand-all-btn" class="action-btn" title="Expand all (E)">
-          <span class="action-icon">⊞</span>
+        <button id="expand-all-btn" class="action-btn labeled" title="Expand all tool outputs (E)">
+          <span class="action-icon">+</span>
+          <span class="action-label">Expand</span>
         </button>
-        <button id="copy-link-btn" class="action-btn" title="Copy link">
-          <span class="action-icon">🔗</span>
+        <button id="copy-link-btn" class="action-btn labeled" title="Copy shareable link">
+          <span class="action-icon">⎘</span>
+          <span class="action-label">Copy</span>
         </button>
       </div>
     </div>
 
     <div class="session-info">
-      <h1 class="session-title">${escapeHtml(truncate(session.title, 120))}</h1>
+      <div class="title-row">
+        <h1 class="session-title" id="session-title" contenteditable="true" spellcheck="false">${escapeHtml(truncate(session.title, 120))}</h1>
+        <button id="edit-title-btn" class="edit-title-btn" title="Edit title">✎</button>
+      </div>
+      ${renderGitContext(session.metadata)}
       <div class="session-meta">
         <span class="meta-item">
           <span class="meta-icon">💬</span>
@@ -197,13 +205,43 @@ function renderHeader(session: ParsedSession): string {
   </header>`;
 }
 
+function renderGitContext(metadata: SessionMetadata): string {
+  const { gitRepo, gitBranch, gitCommit } = metadata;
+  if (!gitRepo && !gitBranch && !gitCommit) return '';
+
+  let parts: string[] = [];
+
+  if (gitRepo) {
+    // Try to make a clickable link
+    const repoUrl = gitRepo.replace(/\.git$/, '').replace(/^git@github\.com:/, 'https://github.com/');
+    const repoName = repoUrl.split('/').slice(-2).join('/');
+    parts.push(`<a href="${repoUrl}" target="_blank" class="git-link">${escapeHtml(repoName)}</a>`);
+  }
+
+  if (gitBranch) {
+    parts.push(`<span class="git-branch">${escapeHtml(gitBranch)}</span>`);
+  }
+
+  if (gitCommit) {
+    const shortCommit = gitCommit.slice(0, 7);
+    if (gitRepo) {
+      const repoUrl = gitRepo.replace(/\.git$/, '').replace(/^git@github\.com:/, 'https://github.com/');
+      parts.push(`<a href="${repoUrl}/commit/${gitCommit}" target="_blank" class="git-commit">${shortCommit}</a>`);
+    } else {
+      parts.push(`<span class="git-commit">${shortCommit}</span>`);
+    }
+  }
+
+  return `<div class="git-context">${parts.join('<span class="git-sep">/</span>')}</div>`;
+}
+
 function renderKeyMoments(metadata: SessionMetadata): string {
   const { filesCreated, filesModified, commandsRun } = metadata;
 
   const hasKeyMoments = (filesCreated?.length || 0) + (filesModified?.length || 0) + (commandsRun?.length || 0) > 0;
   if (!hasKeyMoments) return '';
 
-  let content = '<details class="key-moments"><summary class="key-moments-toggle">📋 Key Moments (TL;DR)</summary><div class="key-moments-content">';
+  let content = '<details class="key-moments"><summary class="key-moments-toggle"><span class="km-icon">▸</span> Key Moments</summary><div class="key-moments-content">';
 
   if (filesCreated && filesCreated.length > 0) {
     content += `<div class="km-section"><span class="km-label">Files Created:</span>`;
@@ -1432,6 +1470,115 @@ body {
   color: var(--text-muted);
 }
 
+.km-icon {
+  display: inline-block;
+  transition: transform 0.2s;
+}
+
+.key-moments[open] .km-icon {
+  transform: rotate(90deg);
+}
+
+/* ========== Action Button Labels ========== */
+.action-btn.labeled {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+}
+
+.action-label {
+  font-size: var(--font-size-xs);
+}
+
+@media (max-width: 640px) {
+  .action-label {
+    display: none;
+  }
+}
+
+/* ========== Editable Title ========== */
+.title-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+
+.session-title {
+  outline: none;
+  border-radius: var(--radius-sm);
+  padding: 2px 4px;
+  margin: -2px -4px;
+  transition: background var(--transition-fast);
+}
+
+.session-title:hover {
+  background: var(--bg-tertiary);
+}
+
+.session-title:focus {
+  background: var(--bg-secondary);
+  box-shadow: 0 0 0 2px var(--accent-blue);
+}
+
+.edit-title-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: var(--space-1);
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+
+.title-row:hover .edit-title-btn {
+  opacity: 1;
+}
+
+.edit-title-btn:hover {
+  color: var(--text-primary);
+}
+
+/* ========== Git Context ========== */
+.git-context {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--font-size-xs);
+  margin-bottom: var(--space-2);
+}
+
+.git-link {
+  color: var(--accent-blue);
+  text-decoration: none;
+}
+
+.git-link:hover {
+  text-decoration: underline;
+}
+
+.git-branch {
+  background: var(--bg-tertiary);
+  padding: 2px 6px;
+  border-radius: 3px;
+  color: var(--accent-purple);
+}
+
+.git-commit {
+  font-family: var(--font-mono);
+  color: var(--accent-yellow);
+  text-decoration: none;
+}
+
+a.git-commit:hover {
+  text-decoration: underline;
+}
+
+.git-sep {
+  color: var(--text-muted);
+  margin: 0 2px;
+}
+
 /* ========== Diff View ========== */
 .diff-view {
   font-size: var(--font-size-sm);
@@ -1901,7 +2048,56 @@ const VIEWER_JS = `
     // Copy link button
     document.getElementById('copy-link-btn')?.addEventListener('click', () => {
       navigator.clipboard.writeText(window.location.href);
+      const btn = document.getElementById('copy-link-btn');
+      const label = btn?.querySelector('.action-label');
+      if (label) {
+        label.textContent = 'Copied!';
+        setTimeout(() => label.textContent = 'Copy', 1500);
+      }
     });
+
+    // Edit title button
+    const titleEl = document.getElementById('session-title');
+    const editTitleBtn = document.getElementById('edit-title-btn');
+
+    editTitleBtn?.addEventListener('click', () => {
+      titleEl?.focus();
+      // Select all text
+      const range = document.createRange();
+      range.selectNodeContents(titleEl);
+      const sel = window.getSelection();
+      sel?.removeAllRanges();
+      sel?.addRange(range);
+    });
+
+    titleEl?.addEventListener('blur', () => {
+      // Title editing finished - could save to localStorage
+      const newTitle = titleEl.textContent?.trim();
+      if (newTitle) {
+        localStorage.setItem('ccshare-title-' + sessionData.id, newTitle);
+      }
+    });
+
+    titleEl?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        titleEl.blur();
+      }
+      if (e.key === 'Escape') {
+        // Restore original title
+        const original = titleEl.dataset.original;
+        if (original) titleEl.textContent = original;
+        titleEl.blur();
+      }
+    });
+
+    // Store original title for escape
+    if (titleEl) {
+      titleEl.dataset.original = titleEl.textContent;
+      // Restore custom title if saved
+      const savedTitle = localStorage.getItem('ccshare-title-' + sessionData.id);
+      if (savedTitle) titleEl.textContent = savedTitle;
+    }
 
     // Inline copy link buttons
     document.querySelectorAll('.copy-link-inline').forEach(btn => {
