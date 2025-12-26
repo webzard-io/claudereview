@@ -424,8 +424,9 @@ app.get('/s/:id', async (c) => {
 });
 
 // Landing page
-app.get('/', (c) => {
-  return c.html(generateLandingHtml());
+app.get('/', async (c) => {
+  const user = await getCurrentUser(c);
+  return c.html(generateLandingHtml(user));
 });
 
 // Admin middleware (for API only)
@@ -505,6 +506,15 @@ app.get('/api/admin/stats', requireAdminApi, async (c) => {
     console.error('Admin stats error:', error);
     return c.json({ error: 'Failed to get stats' }, 500);
   }
+});
+
+// User dashboard
+app.get('/dashboard', async (c) => {
+  const user = await getCurrentUser(c);
+  if (!user) {
+    return c.redirect('/auth/github');
+  }
+  return c.html(generateDashboardHtml(user));
 });
 
 // Admin dashboard page (auth handled client-side)
@@ -605,7 +615,14 @@ function generate500Html(): string {
 </html>`;
 }
 
-function generateLandingHtml(): string {
+function generateLandingHtml(user: User | null): string {
+  const headerRight = user
+    ? `<a href="/dashboard" class="user-link">
+        <img src="${escapeHtml(user.githubAvatarUrl || '')}" alt="" class="avatar">
+        <span class="username">${escapeHtml(user.githubUsername)}</span>
+      </a>`
+    : `<a href="/auth/github" class="login-btn">Sign in with GitHub</a>`;
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -622,6 +639,7 @@ function generateLandingHtml(): string {
         <span class="logo-icon">◈</span>
         <span class="logo-text">claude<span class="accent">review</span></span>
       </div>
+      ${headerRight}
     </header>
 
     <main>
@@ -675,6 +693,222 @@ ccshare preview --last</code></pre>
       <span class="dim">Built for developers who use Claude Code</span>
     </footer>
   </div>
+</body>
+</html>`;
+}
+
+function generateDashboardHtml(user: User): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>My Sessions - claudereview</title>
+  <style>${DASHBOARD_CSS}</style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="logo">
+        <span class="logo-icon">◈</span>
+        <a href="/" class="logo-text">claude<span class="accent">review</span></a>
+      </div>
+      <div class="user-info">
+        <img src="${escapeHtml(user.githubAvatarUrl || '')}" alt="" class="avatar">
+        <span class="username">${escapeHtml(user.githubUsername)}</span>
+        <a href="/auth/logout" class="logout-link">Logout</a>
+      </div>
+    </header>
+
+    <main>
+      <h1>My Sessions</h1>
+      <p class="subtitle">Manage your shared Claude Code sessions</p>
+
+      <div id="sessions-list" class="sessions-list">
+        <div class="loading">Loading sessions...</div>
+      </div>
+
+      <div id="empty-state" class="empty-state hidden">
+        <div class="empty-icon">📭</div>
+        <h2>No sessions yet</h2>
+        <p>Share your first Claude Code session using the CLI or MCP server.</p>
+        <pre><code>ccshare share --last</code></pre>
+      </div>
+    </main>
+  </div>
+
+  <!-- Edit Modal -->
+  <div id="edit-modal" class="modal hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-content">
+      <h2>Edit Session</h2>
+      <form id="edit-form">
+        <label>
+          Title
+          <input type="text" id="edit-title" maxlength="200">
+        </label>
+        <div class="modal-actions">
+          <button type="button" class="btn-secondary" onclick="closeModal()">Cancel</button>
+          <button type="submit" class="btn-primary">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Delete Confirmation Modal -->
+  <div id="delete-modal" class="modal hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-content">
+      <h2>Delete Session?</h2>
+      <p>This action cannot be undone. The session will be permanently deleted.</p>
+      <div class="modal-actions">
+        <button type="button" class="btn-secondary" onclick="closeDeleteModal()">Cancel</button>
+        <button type="button" class="btn-danger" id="confirm-delete">Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let currentEditId = null;
+    let currentDeleteId = null;
+
+    async function loadSessions() {
+      try {
+        const res = await fetch('/api/my-sessions');
+        if (!res.ok) throw new Error('Failed to load');
+        const data = await res.json();
+
+        const list = document.getElementById('sessions-list');
+        const empty = document.getElementById('empty-state');
+
+        if (data.sessions.length === 0) {
+          list.classList.add('hidden');
+          empty.classList.remove('hidden');
+          return;
+        }
+
+        list.innerHTML = data.sessions.map(s => \`
+          <div class="session-card" data-id="\${s.id}">
+            <div class="session-main">
+              <div class="session-title">\${escapeHtml(s.title)}</div>
+              <div class="session-meta">
+                <span>\${s.messageCount} messages</span>
+                <span class="sep">·</span>
+                <span>\${s.toolCount} tools</span>
+                <span class="sep">·</span>
+                <span>\${s.viewCount} views</span>
+                <span class="sep">·</span>
+                <span>\${formatDate(s.createdAt)}</span>
+                <span class="visibility-badge \${s.visibility}">\${s.visibility === 'private' ? '🔐 Private' : '🔗 Public'}</span>
+              </div>
+            </div>
+            <div class="session-actions">
+              <button class="btn-icon" onclick="copyLink('\${s.id}')" title="Copy link">📋</button>
+              <a href="/s/\${s.id}" class="btn-icon" target="_blank" title="View">👁️</a>
+              <button class="btn-icon" onclick="openEditModal('\${s.id}', '\${escapeHtml(s.title).replace(/'/g, "\\\\'")}' )" title="Edit">✏️</button>
+              <button class="btn-icon btn-danger" onclick="openDeleteModal('\${s.id}')" title="Delete">🗑️</button>
+            </div>
+          </div>
+        \`).join('');
+      } catch (err) {
+        document.getElementById('sessions-list').innerHTML =
+          '<div class="error">Failed to load sessions. Please try again.</div>';
+      }
+    }
+
+    function escapeHtml(str) {
+      const div = document.createElement('div');
+      div.textContent = str || '';
+      return div.innerHTML;
+    }
+
+    function formatDate(dateStr) {
+      const date = new Date(dateStr);
+      const now = new Date();
+      const diffMs = now - date;
+      const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+
+      if (diffDays === 0) return 'Today';
+      if (diffDays === 1) return 'Yesterday';
+      if (diffDays < 7) return diffDays + ' days ago';
+      return date.toLocaleDateString();
+    }
+
+    function copyLink(id) {
+      const url = window.location.origin + '/s/' + id;
+      navigator.clipboard.writeText(url);
+      // Show brief feedback
+      const btn = event.target;
+      const original = btn.textContent;
+      btn.textContent = '✓';
+      setTimeout(() => btn.textContent = original, 1500);
+    }
+
+    function openEditModal(id, title) {
+      currentEditId = id;
+      document.getElementById('edit-title').value = title;
+      document.getElementById('edit-modal').classList.remove('hidden');
+    }
+
+    function closeModal() {
+      document.getElementById('edit-modal').classList.add('hidden');
+      currentEditId = null;
+    }
+
+    function openDeleteModal(id) {
+      currentDeleteId = id;
+      document.getElementById('delete-modal').classList.remove('hidden');
+    }
+
+    function closeDeleteModal() {
+      document.getElementById('delete-modal').classList.add('hidden');
+      currentDeleteId = null;
+    }
+
+    document.getElementById('edit-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const title = document.getElementById('edit-title').value;
+
+      try {
+        const res = await fetch('/api/sessions/' + currentEditId, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title })
+        });
+
+        if (!res.ok) throw new Error('Failed to update');
+        closeModal();
+        loadSessions();
+      } catch (err) {
+        alert('Failed to update session');
+      }
+    });
+
+    document.getElementById('confirm-delete').addEventListener('click', async () => {
+      try {
+        const res = await fetch('/api/sessions/' + currentDeleteId, {
+          method: 'DELETE'
+        });
+
+        if (!res.ok) throw new Error('Failed to delete');
+        closeDeleteModal();
+        loadSessions();
+      } catch (err) {
+        alert('Failed to delete session');
+      }
+    });
+
+    // Close modals on backdrop click
+    document.querySelectorAll('.modal-backdrop').forEach(el => {
+      el.addEventListener('click', () => {
+        closeModal();
+        closeDeleteModal();
+      });
+    });
+
+    // Load sessions on page load
+    loadSessions();
+  </script>
 </body>
 </html>`;
 }
@@ -1120,6 +1354,9 @@ html, body {
 
 header {
   margin-bottom: 4rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
 }
 
 .logo {
@@ -1131,6 +1368,48 @@ header {
 .logo-icon { color: var(--accent); font-size: 1.5rem; }
 .logo-text { font-size: 1.25rem; color: var(--text-muted); }
 .accent { color: var(--accent); }
+
+.login-btn {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.5rem 1rem;
+  color: var(--text);
+  text-decoration: none;
+  font-size: 0.875rem;
+  transition: all 0.15s;
+}
+
+.login-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.user-link {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  text-decoration: none;
+  color: var(--text);
+  padding: 0.25rem 0.5rem;
+  border-radius: 6px;
+  transition: background 0.15s;
+}
+
+.user-link:hover {
+  background: var(--bg-secondary);
+}
+
+.user-link .avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+}
+
+.user-link .username {
+  font-size: 0.875rem;
+}
 
 main h1 {
   font-family: var(--font-sans);
@@ -1481,6 +1760,346 @@ header {
 
 @media (max-width: 768px) {
   .stats-grid { grid-template-columns: repeat(2, 1fr); }
+}
+`;
+
+const DASHBOARD_CSS = `
+:root {
+  --bg: #0d1117;
+  --bg-secondary: #161b22;
+  --bg-tertiary: #21262d;
+  --border: #30363d;
+  --text: #c9d1d9;
+  --text-muted: #8b949e;
+  --text-bright: #f0f6fc;
+  --accent: #58a6ff;
+  --green: #3fb950;
+  --red: #f85149;
+  --purple: #a371f7;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', Menlo, monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-mono);
+  min-height: 100vh;
+}
+
+.container {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 2rem;
+}
+
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 2rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.logo-icon { color: var(--accent); font-size: 1.5rem; }
+.logo-text {
+  font-size: 1.25rem;
+  color: var(--text-muted);
+  text-decoration: none;
+}
+.logo-text:hover { color: var(--text); }
+.accent { color: var(--accent); }
+
+.user-info {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+}
+
+.username {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.logout-link {
+  color: var(--text-muted);
+  text-decoration: none;
+  font-size: 0.875rem;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.logout-link:hover {
+  color: var(--text);
+  border-color: var(--text-muted);
+}
+
+main h1 {
+  font-family: var(--font-sans);
+  font-size: 1.5rem;
+  color: var(--text-bright);
+  margin-bottom: 0.5rem;
+}
+
+.subtitle {
+  color: var(--text-muted);
+  margin-bottom: 2rem;
+}
+
+.sessions-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.session-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem 1.25rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  transition: border-color 0.15s;
+}
+
+.session-card:hover {
+  border-color: var(--text-muted);
+}
+
+.session-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.session-title {
+  font-weight: 500;
+  color: var(--text-bright);
+  margin-bottom: 0.5rem;
+  font-family: var(--font-sans);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.session-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+}
+
+.session-meta .sep { opacity: 0.5; }
+
+.visibility-badge {
+  font-size: 0.75rem;
+  padding: 0.125rem 0.375rem;
+  border-radius: 4px;
+  margin-left: 0.5rem;
+}
+
+.visibility-badge.public {
+  background: rgba(88, 166, 255, 0.15);
+  color: var(--accent);
+}
+
+.visibility-badge.private {
+  background: rgba(163, 113, 247, 0.15);
+  color: var(--purple);
+}
+
+.session-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-left: 1rem;
+}
+
+.btn-icon {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 0.5rem;
+  cursor: pointer;
+  font-size: 1rem;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+}
+
+.btn-icon:hover {
+  background: var(--bg-tertiary);
+  border-color: var(--border);
+}
+
+.btn-icon.btn-danger:hover {
+  background: rgba(248, 81, 73, 0.15);
+  border-color: var(--red);
+}
+
+.empty-state {
+  text-align: center;
+  padding: 4rem 2rem;
+  color: var(--text-muted);
+}
+
+.empty-icon { font-size: 3rem; margin-bottom: 1rem; }
+.empty-state h2 {
+  font-family: var(--font-sans);
+  color: var(--text-bright);
+  margin-bottom: 0.5rem;
+}
+.empty-state p { margin-bottom: 1.5rem; }
+.empty-state pre {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.75rem 1.5rem;
+  display: inline-block;
+}
+
+.loading {
+  text-align: center;
+  padding: 2rem;
+  color: var(--text-muted);
+}
+
+.error {
+  text-align: center;
+  padding: 2rem;
+  color: var(--red);
+}
+
+/* Modals */
+.modal {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(4px);
+}
+
+.modal-content {
+  position: relative;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1.5rem;
+  width: 100%;
+  max-width: 400px;
+  margin: 1rem;
+}
+
+.modal-content h2 {
+  font-family: var(--font-sans);
+  color: var(--text-bright);
+  margin-bottom: 1rem;
+}
+
+.modal-content p {
+  color: var(--text-muted);
+  margin-bottom: 1.5rem;
+}
+
+.modal-content label {
+  display: block;
+  color: var(--text-muted);
+  font-size: 0.875rem;
+  margin-bottom: 0.5rem;
+}
+
+.modal-content input[type="text"] {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.75rem;
+  font-family: var(--font-mono);
+  color: var(--text);
+  margin-bottom: 1.5rem;
+}
+
+.modal-content input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.modal-actions {
+  display: flex;
+  gap: 0.75rem;
+  justify-content: flex-end;
+}
+
+.btn-secondary, .btn-primary, .btn-danger {
+  border: none;
+  border-radius: 6px;
+  padding: 0.625rem 1rem;
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.btn-secondary {
+  background: var(--bg-tertiary);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: white;
+}
+
+.btn-danger {
+  background: var(--red);
+  color: white;
+}
+
+.btn-secondary:hover, .btn-primary:hover, .btn-danger:hover {
+  opacity: 0.9;
+}
+
+.hidden { display: none !important; }
+
+@media (max-width: 640px) {
+  .session-card {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .session-actions {
+    margin-left: 0;
+    margin-top: 1rem;
+    justify-content: flex-end;
+  }
+  .user-info .username { display: none; }
 }
 `;
 
