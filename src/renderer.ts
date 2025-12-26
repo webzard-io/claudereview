@@ -1238,8 +1238,20 @@ body {
 }
 
 .tool-result.collapsed .result-content {
-  max-height: 200px;
+  max-height: 60px;
   overflow: hidden;
+  position: relative;
+}
+
+.tool-result.collapsed .result-content::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 40px;
+  background: linear-gradient(transparent, var(--bg-secondary));
+  pointer-events: none;
 }
 
 .output-pre {
@@ -1658,14 +1670,28 @@ a.git-commit:hover {
 /* ========== Tool Navigation ========== */
 .tool-badge.tool-nav {
   cursor: pointer;
-  border: none;
+  border: 1px dashed transparent;
   font-family: var(--font-mono);
   transition: all var(--transition-fast);
+  position: relative;
+}
+
+.tool-badge.tool-nav::after {
+  content: '↗';
+  font-size: 8px;
+  margin-left: 2px;
+  opacity: 0.5;
+  vertical-align: super;
 }
 
 .tool-badge.tool-nav:hover {
   background: var(--bg-elevated);
   transform: scale(1.05);
+  border-color: var(--border-medium);
+}
+
+.tool-badge.tool-nav:hover::after {
+  opacity: 1;
 }
 
 .tool-nav-indicator {
