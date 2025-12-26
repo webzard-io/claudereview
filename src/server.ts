@@ -1,19 +1,279 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
+import { setCookie, getCookie, deleteCookie } from 'hono/cookie';
 import { nanoid } from 'nanoid';
 import { z } from 'zod';
-import { db, sessions, users, apiKeys, type NewSession, type Session } from './db/index.ts';
-import { eq, sql, desc, count } from 'drizzle-orm';
+import { db, sessions, users, apiKeys, type NewSession, type Session, type User } from './db/index.ts';
+import { eq, sql, desc, count, and } from 'drizzle-orm';
 
 const app = new Hono();
+
+// Environment
+const GITHUB_CLIENT_ID = process.env.GITHUB_CLIENT_ID;
+const GITHUB_CLIENT_SECRET = process.env.GITHUB_CLIENT_SECRET;
+const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
+const SESSION_SECRET = process.env.SESSION_SECRET || 'dev-secret-change-in-production';
+
+// Simple session store (in production, use Redis or database)
+const sessionStore = new Map<string, { userId: string; expiresAt: number }>();
 
 // Middleware
 app.use('*', logger());
 app.use('/api/*', cors());
 
+// Auth helper
+async function getCurrentUser(c: any): Promise<User | null> {
+  const sessionId = getCookie(c, 'session');
+  if (!sessionId) return null;
+
+  const session = sessionStore.get(sessionId);
+  if (!session || session.expiresAt < Date.now()) {
+    sessionStore.delete(sessionId);
+    return null;
+  }
+
+  if (!db) return null;
+
+  const [user] = await db.select().from(users).where(eq(users.id, session.userId)).limit(1);
+  return user || null;
+}
+
 // Health check
 app.get('/health', (c) => c.json({ status: 'ok' }));
+
+// ============================================================================
+// GitHub OAuth
+// ============================================================================
+
+app.get('/auth/github', (c) => {
+  if (!GITHUB_CLIENT_ID) {
+    return c.json({ error: 'GitHub OAuth not configured' }, 500);
+  }
+
+  const state = nanoid(16);
+  setCookie(c, 'oauth_state', state, {
+    httpOnly: true,
+    secure: BASE_URL.startsWith('https'),
+    sameSite: 'Lax',
+    maxAge: 600, // 10 minutes
+  });
+
+  const params = new URLSearchParams({
+    client_id: GITHUB_CLIENT_ID,
+    redirect_uri: `${BASE_URL}/auth/github/callback`,
+    scope: 'read:user',
+    state,
+  });
+
+  return c.redirect(`https://github.com/login/oauth/authorize?${params}`);
+});
+
+app.get('/auth/github/callback', async (c) => {
+  const code = c.req.query('code');
+  const state = c.req.query('state');
+  const storedState = getCookie(c, 'oauth_state');
+
+  deleteCookie(c, 'oauth_state');
+
+  if (!code || !state || state !== storedState) {
+    return c.redirect('/?error=invalid_state');
+  }
+
+  if (!GITHUB_CLIENT_ID || !GITHUB_CLIENT_SECRET) {
+    return c.redirect('/?error=oauth_not_configured');
+  }
+
+  try {
+    // Exchange code for token
+    const tokenRes = await fetch('https://github.com/login/oauth/access_token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
+      body: JSON.stringify({
+        client_id: GITHUB_CLIENT_ID,
+        client_secret: GITHUB_CLIENT_SECRET,
+        code,
+      }),
+    });
+
+    const tokenData = await tokenRes.json() as { access_token?: string; error?: string };
+    if (!tokenData.access_token) {
+      return c.redirect('/?error=token_failed');
+    }
+
+    // Get user info
+    const userRes = await fetch('https://api.github.com/user', {
+      headers: {
+        'Authorization': `Bearer ${tokenData.access_token}`,
+        'Accept': 'application/json',
+      },
+    });
+
+    const githubUser = await userRes.json() as {
+      id: number;
+      login: string;
+      avatar_url: string;
+    };
+
+    if (!db) {
+      return c.redirect('/?error=db_not_configured');
+    }
+
+    // Find or create user
+    let [user] = await db.select().from(users).where(eq(users.githubId, String(githubUser.id))).limit(1);
+
+    if (!user) {
+      const userId = nanoid(12);
+      await db.insert(users).values({
+        id: userId,
+        githubId: String(githubUser.id),
+        githubUsername: githubUser.login,
+        githubAvatarUrl: githubUser.avatar_url,
+      });
+      [user] = await db.select().from(users).where(eq(users.id, userId)).limit(1);
+    } else {
+      // Update username/avatar if changed
+      await db.update(users)
+        .set({
+          githubUsername: githubUser.login,
+          githubAvatarUrl: githubUser.avatar_url,
+        })
+        .where(eq(users.id, user.id));
+    }
+
+    // Create session
+    const sessionId = nanoid(32);
+    sessionStore.set(sessionId, {
+      userId: user!.id,
+      expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000, // 30 days
+    });
+
+    setCookie(c, 'session', sessionId, {
+      httpOnly: true,
+      secure: BASE_URL.startsWith('https'),
+      sameSite: 'Lax',
+      maxAge: 30 * 24 * 60 * 60, // 30 days
+      path: '/',
+    });
+
+    return c.redirect('/dashboard');
+  } catch (error) {
+    console.error('OAuth error:', error);
+    return c.redirect('/?error=oauth_failed');
+  }
+});
+
+app.get('/auth/logout', (c) => {
+  const sessionId = getCookie(c, 'session');
+  if (sessionId) {
+    sessionStore.delete(sessionId);
+    deleteCookie(c, 'session');
+  }
+  return c.redirect('/');
+});
+
+// ============================================================================
+// User API
+// ============================================================================
+
+app.get('/api/me', async (c) => {
+  const user = await getCurrentUser(c);
+  if (!user) {
+    return c.json({ error: 'Not authenticated' }, 401);
+  }
+  return c.json({
+    id: user.id,
+    username: user.githubUsername,
+    avatarUrl: user.githubAvatarUrl,
+  });
+});
+
+app.get('/api/my-sessions', async (c) => {
+  const user = await getCurrentUser(c);
+  if (!user) {
+    return c.json({ error: 'Not authenticated' }, 401);
+  }
+
+  if (!db) {
+    return c.json({ error: 'Database not configured' }, 500);
+  }
+
+  const userSessions = await db.select({
+    id: sessions.id,
+    title: sessions.title,
+    messageCount: sessions.messageCount,
+    toolCount: sessions.toolCount,
+    durationSeconds: sessions.durationSeconds,
+    visibility: sessions.visibility,
+    viewCount: sessions.viewCount,
+    createdAt: sessions.createdAt,
+  })
+    .from(sessions)
+    .where(eq(sessions.userId, user.id))
+    .orderBy(desc(sessions.createdAt));
+
+  return c.json({ sessions: userSessions });
+});
+
+app.delete('/api/sessions/:id', async (c) => {
+  const user = await getCurrentUser(c);
+  if (!user) {
+    return c.json({ error: 'Not authenticated' }, 401);
+  }
+
+  const sessionId = c.req.param('id');
+  if (!db) {
+    return c.json({ error: 'Database not configured' }, 500);
+  }
+
+  // Verify ownership
+  const [session] = await db.select().from(sessions).where(
+    and(eq(sessions.id, sessionId), eq(sessions.userId, user.id))
+  ).limit(1);
+
+  if (!session) {
+    return c.json({ error: 'Session not found or not owned by you' }, 404);
+  }
+
+  await db.delete(sessions).where(eq(sessions.id, sessionId));
+  return c.json({ success: true });
+});
+
+app.patch('/api/sessions/:id', async (c) => {
+  const user = await getCurrentUser(c);
+  if (!user) {
+    return c.json({ error: 'Not authenticated' }, 401);
+  }
+
+  const sessionId = c.req.param('id');
+  const body = await c.req.json() as { title?: string; visibility?: 'public' | 'private' };
+
+  if (!db) {
+    return c.json({ error: 'Database not configured' }, 500);
+  }
+
+  // Verify ownership
+  const [session] = await db.select().from(sessions).where(
+    and(eq(sessions.id, sessionId), eq(sessions.userId, user.id))
+  ).limit(1);
+
+  if (!session) {
+    return c.json({ error: 'Session not found or not owned by you' }, 404);
+  }
+
+  const updates: Partial<typeof session> = {};
+  if (body.title) updates.title = body.title.slice(0, 200);
+  if (body.visibility) updates.visibility = body.visibility;
+
+  if (Object.keys(updates).length > 0) {
+    await db.update(sessions).set(updates).where(eq(sessions.id, sessionId));
+  }
+
+  return c.json({ success: true });
+});
 
 // Upload schema
 const uploadSchema = z.object({
@@ -38,13 +298,28 @@ app.post('/api/upload', async (c) => {
     // Generate short ID for URL
     const id = nanoid(10);
 
-    // Get user from auth header if present
-    let userId: string | null = null;
-    const authHeader = c.req.header('Authorization');
-    if (authHeader?.startsWith('Bearer ')) {
-      const token = authHeader.slice(7);
-      // TODO: Validate API key and get user ID
-      // For now, allow anonymous uploads
+    // Get user from session cookie (if logged in via web)
+    const user = await getCurrentUser(c);
+    let userId: string | null = user?.id || null;
+
+    // Also check API key auth header (for CLI)
+    if (!userId) {
+      const authHeader = c.req.header('Authorization');
+      if (authHeader?.startsWith('Bearer ') && db) {
+        const token = authHeader.slice(7);
+        // Hash and lookup API key
+        const [apiKey] = await db.select()
+          .from(apiKeys)
+          .where(eq(apiKeys.keyHash, token))
+          .limit(1);
+        if (apiKey) {
+          userId = apiKey.userId;
+          // Update last used
+          await db.update(apiKeys)
+            .set({ lastUsedAt: new Date() })
+            .where(eq(apiKeys.id, apiKey.id));
+        }
+      }
     }
 
     if (!db) {
