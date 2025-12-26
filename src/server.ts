@@ -1073,10 +1073,22 @@ function generateDashboardHtml(user: User): string {
       setTimeout(() => toast.classList.remove('show'), 3000);
     }
 
+    function copyToClipboard(text) {
+      // Use fallback method to avoid permission prompts
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+    }
+
     function copyLink(id, key) {
       let url = window.location.origin + '/s/' + id;
       if (key) url += '#key=' + key;
-      navigator.clipboard.writeText(url);
+      copyToClipboard(url);
       // Show brief feedback
       const btn = event.target;
       btn.textContent = 'Copied!';
@@ -1192,10 +1204,10 @@ function generateDashboardHtml(user: User): string {
         // If we got a new key (changed to public), copy and show toast
         if (data.newKey) {
           const newUrl = window.location.origin + '/s/' + sessionId + '#key=' + data.newKey;
-          navigator.clipboard.writeText(newUrl);
-          showToast('Session is now public! Link copied to clipboard.');
+          copyToClipboard(newUrl);
+          showToast('Session is now public! Link copied.');
         } else {
-          showToast('Session updated successfully.');
+          showToast('Session updated.');
         }
       } catch (err) {
         errorEl.textContent = err.message;
