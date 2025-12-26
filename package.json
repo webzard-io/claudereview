@@ -14,9 +14,9 @@
     "dev": "bun run --watch src/server.ts",
     "start": "bun run src/server.ts",
     "cli": "bun run src/cli.ts",
-    "db:push": "drizzle-kit push",
-    "db:generate": "drizzle-kit generate",
-    "db:studio": "drizzle-kit studio"
+    "db:push": "drizzle-kit push --config=drizzle.config.ts",
+    "db:generate": "drizzle-kit generate --config=drizzle.config.ts",
+    "db:studio": "drizzle-kit studio --config=drizzle.config.ts"
   },
   "keywords": [
     "claude",
