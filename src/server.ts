@@ -153,16 +153,15 @@ app.get('/', (c) => {
   return c.html(generateLandingHtml());
 });
 
-// Admin middleware
-const requireAdmin = async (c: any, next: any) => {
+// Admin middleware (for API only)
+const requireAdminApi = async (c: any, next: any) => {
   const adminKey = process.env.ADMIN_KEY;
   if (!adminKey) {
     return c.json({ error: 'Admin not configured' }, 500);
   }
 
   const authHeader = c.req.header('Authorization');
-  const queryKey = c.req.query('key');
-  const providedKey = authHeader?.replace('Bearer ', '') || queryKey;
+  const providedKey = authHeader?.replace('Bearer ', '');
 
   if (providedKey !== adminKey) {
     return c.json({ error: 'Unauthorized' }, 401);
@@ -172,7 +171,7 @@ const requireAdmin = async (c: any, next: any) => {
 };
 
 // Admin API: Get analytics
-app.get('/api/admin/stats', requireAdmin, async (c) => {
+app.get('/api/admin/stats', requireAdminApi, async (c) => {
   if (!db) {
     return c.json({ error: 'Database not configured' }, 500);
   }
@@ -233,8 +232,8 @@ app.get('/api/admin/stats', requireAdmin, async (c) => {
   }
 });
 
-// Admin dashboard page
-app.get('/admin', requireAdmin, async (c) => {
+// Admin dashboard page (auth handled client-side)
+app.get('/admin', async (c) => {
   return c.html(generateAdminHtml());
 });
 
@@ -415,13 +414,31 @@ function generateAdminHtml(): string {
   <style>${ADMIN_CSS}</style>
 </head>
 <body>
-  <div class="container">
+  <!-- Login prompt -->
+  <div id="login-screen" class="login-screen">
+    <div class="login-box">
+      <div class="logo">
+        <span class="logo-icon">◈</span>
+        <span class="logo-text">claude<span class="accent">review</span></span>
+        <span class="admin-badge">admin</span>
+      </div>
+      <form id="login-form">
+        <input type="password" id="admin-key" placeholder="Admin password" autocomplete="off" autofocus>
+        <button type="submit">Login</button>
+      </form>
+      <div id="login-error" class="error hidden">Invalid password</div>
+    </div>
+  </div>
+
+  <!-- Dashboard (hidden until authenticated) -->
+  <div id="dashboard" class="container hidden">
     <header>
       <div class="logo">
         <span class="logo-icon">◈</span>
         <span class="logo-text">claude<span class="accent">review</span></span>
         <span class="admin-badge">admin</span>
       </div>
+      <button id="logout-btn" class="logout-btn">Logout</button>
     </header>
 
     <main>
@@ -471,18 +488,58 @@ function generateAdminHtml(): string {
     </main>
   </div>
   <script>
-    (async function() {
-      const key = new URLSearchParams(window.location.search).get('key');
-      if (!key) {
-        document.body.innerHTML = '<div style="padding:2rem;color:#f85149;">Missing admin key</div>';
-        return;
+    (function() {
+      const loginScreen = document.getElementById('login-screen');
+      const dashboard = document.getElementById('dashboard');
+      const loginForm = document.getElementById('login-form');
+      const loginError = document.getElementById('login-error');
+      const adminKeyInput = document.getElementById('admin-key');
+      const logoutBtn = document.getElementById('logout-btn');
+
+      // Check for saved session
+      const savedKey = sessionStorage.getItem('adminKey');
+      if (savedKey) {
+        authenticate(savedKey);
       }
 
-      try {
-        const res = await fetch('/api/admin/stats?key=' + key);
-        if (!res.ok) throw new Error('Unauthorized');
-        const data = await res.json();
+      loginForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const key = adminKeyInput.value;
+        loginError.classList.add('hidden');
+        await authenticate(key);
+      });
 
+      logoutBtn.addEventListener('click', () => {
+        sessionStorage.removeItem('adminKey');
+        loginScreen.classList.remove('hidden');
+        dashboard.classList.add('hidden');
+        adminKeyInput.value = '';
+      });
+
+      async function authenticate(key) {
+        try {
+          const res = await fetch('/api/admin/stats', {
+            headers: { 'Authorization': 'Bearer ' + key }
+          });
+
+          if (!res.ok) {
+            loginError.classList.remove('hidden');
+            sessionStorage.removeItem('adminKey');
+            return;
+          }
+
+          sessionStorage.setItem('adminKey', key);
+          const data = await res.json();
+          renderDashboard(data);
+          loginScreen.classList.add('hidden');
+          dashboard.classList.remove('hidden');
+        } catch (err) {
+          loginError.textContent = 'Error: ' + err.message;
+          loginError.classList.remove('hidden');
+        }
+      }
+
+      function renderDashboard(data) {
         document.getElementById('total-sessions').textContent = data.totalSessions.toLocaleString();
         document.getElementById('total-views').textContent = data.totalViews.toLocaleString();
 
@@ -493,29 +550,38 @@ function generateAdminHtml(): string {
 
         // Render chart
         const chart = document.getElementById('chart');
-        const maxCount = Math.max(...data.sessionsPerDay.map(d => d.count), 1);
-        chart.innerHTML = data.sessionsPerDay.map(d => {
-          const height = (d.count / maxCount * 100).toFixed(0);
-          const date = new Date(d.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-          return '<div class="bar" style="height:' + height + '%"><span class="bar-value">' + d.count + '</span><span class="bar-label">' + date + '</span></div>';
-        }).join('');
+        if (data.sessionsPerDay.length === 0) {
+          chart.innerHTML = '<div class="no-data">No data yet</div>';
+        } else {
+          const maxCount = Math.max(...data.sessionsPerDay.map(d => d.count), 1);
+          chart.innerHTML = data.sessionsPerDay.map(d => {
+            const height = (d.count / maxCount * 100).toFixed(0);
+            const date = new Date(d.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+            return '<div class="bar" style="height:' + height + '%"><span class="bar-value">' + d.count + '</span><span class="bar-label">' + date + '</span></div>';
+          }).join('');
+        }
 
         // Top viewed
         const topViewedBody = document.querySelector('#top-viewed tbody');
-        topViewedBody.innerHTML = data.topViewed.map(s =>
-          '<tr><td>' + escapeHtml(s.title?.slice(0,50) || 'Untitled') + '</td><td>' + s.viewCount + '</td><td><a href="/s/' + s.id + '">View</a></td></tr>'
-        ).join('');
+        if (data.topViewed.length === 0) {
+          topViewedBody.innerHTML = '<tr><td colspan="3" class="no-data">No sessions yet</td></tr>';
+        } else {
+          topViewedBody.innerHTML = data.topViewed.map(s =>
+            '<tr><td>' + escapeHtml(s.title?.slice(0,50) || 'Untitled') + '</td><td>' + s.viewCount + '</td><td><a href="/s/' + s.id + '">View</a></td></tr>'
+          ).join('');
+        }
 
         // Recent sessions
         const recentBody = document.querySelector('#recent-sessions tbody');
-        recentBody.innerHTML = data.recentSessions.map(s => {
-          const date = new Date(s.createdAt).toLocaleDateString();
-          const type = s.visibility === 'private' ? '🔐' : '🔗';
-          return '<tr><td>' + escapeHtml(s.title?.slice(0,50) || 'Untitled') + '</td><td>' + type + '</td><td>' + s.viewCount + '</td><td>' + date + '</td><td><a href="/s/' + s.id + '">View</a></td></tr>';
-        }).join('');
-
-      } catch (err) {
-        document.body.innerHTML = '<div style="padding:2rem;color:#f85149;">Error: ' + err.message + '</div>';
+        if (data.recentSessions.length === 0) {
+          recentBody.innerHTML = '<tr><td colspan="5" class="no-data">No sessions yet</td></tr>';
+        } else {
+          recentBody.innerHTML = data.recentSessions.map(s => {
+            const date = new Date(s.createdAt).toLocaleDateString();
+            const type = s.visibility === 'private' ? '🔐' : '🔗';
+            return '<tr><td>' + escapeHtml(s.title?.slice(0,50) || 'Untitled') + '</td><td>' + type + '</td><td>' + s.viewCount + '</td><td>' + date + '</td><td><a href="/s/' + s.id + '">View</a></td></tr>';
+          }).join('');
+        }
       }
 
       function escapeHtml(str) {
@@ -1037,6 +1103,105 @@ header {
 
 .data-table a:hover {
   text-decoration: underline;
+}
+
+/* Login screen */
+.login-screen {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  background: var(--bg);
+}
+
+.login-box {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 2rem;
+  text-align: center;
+  width: 100%;
+  max-width: 360px;
+}
+
+.login-box .logo {
+  justify-content: center;
+  margin-bottom: 2rem;
+}
+
+.login-box form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.login-box input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  font-family: var(--font-mono);
+  font-size: 1rem;
+  color: var(--text);
+  text-align: center;
+}
+
+.login-box input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.login-box button {
+  background: var(--accent);
+  border: none;
+  border-radius: 6px;
+  padding: 0.75rem;
+  font-size: 1rem;
+  font-weight: 500;
+  color: white;
+  cursor: pointer;
+  font-family: var(--font-mono);
+}
+
+.login-box button:hover {
+  opacity: 0.9;
+}
+
+.login-box .error {
+  color: #f85149;
+  font-size: 0.875rem;
+  margin-top: 1rem;
+}
+
+.logout-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.5rem 1rem;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+}
+
+.logout-btn:hover {
+  color: var(--text);
+  border-color: var(--text-muted);
+}
+
+.hidden { display: none !important; }
+
+.no-data {
+  color: var(--text-muted);
+  text-align: center;
+  padding: 2rem;
+  font-style: italic;
+}
+
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
 }
 
 @media (max-width: 768px) {
