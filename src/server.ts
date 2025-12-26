@@ -675,6 +675,12 @@ app.get('/og-image.png', (c) => {
   });
 });
 
+// Privacy page
+app.get('/privacy', async (c) => {
+  const user = await getCurrentUser(c);
+  return c.html(generatePrivacyHtml(user));
+});
+
 function generateOgImageSvg(): string {
   return `<svg width="1200" height="630" viewBox="0 0 1200 630" fill="none" xmlns="http://www.w3.org/2000/svg">
   <defs>
@@ -728,7 +734,7 @@ function generateOgImageSvg(): string {
   <text x="80" y="365" fill="#1a1a1a" font-family="system-ui, sans-serif" font-size="32" font-weight="600">not just the final diff.</text>
 
   <!-- Subtitle -->
-  <text x="80" y="420" fill="#666666" font-family="system-ui, sans-serif" font-size="20">End-to-end encrypted Claude Code session sharing</text>
+  <text x="80" y="420" fill="#666666" font-family="system-ui, sans-serif" font-size="20">Encrypted Claude Code session sharing</text>
 
   <!-- URL -->
   <text x="80" y="540" fill="#0066ff" font-family="monospace" font-size="18">claudereview.com</text>
@@ -906,8 +912,12 @@ app.get('/admin', async (c) => {
 
 // Generate viewer HTML that fetches and decrypts on client side
 function generateViewerHtml(session: Session | null, id: string): string {
-  const title = session?.title || 'Claude Code Session';
-  const description = session
+  // For private sessions, use generic metadata to avoid leaking sensitive info
+  const isPrivate = session?.visibility === 'private';
+  const title = isPrivate ? 'Protected Session' : (session?.title || 'Claude Code Session');
+  const description = isPrivate
+    ? 'This session is password protected'
+    : session
     ? `${session.messageCount} messages · ${formatDuration(session.durationSeconds)}`
     : 'View Claude Code session';
 
@@ -918,7 +928,7 @@ function generateViewerHtml(session: Session | null, id: string): string {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${escapeHtml(title)} - claudereview</title>
   <meta property="og:type" content="website">
-  <meta property="og:title" content="Claude Session: ${escapeHtml(title)}">
+  <meta property="og:title" content="${isPrivate ? 'Protected Session' : 'Claude Session: ' + escapeHtml(title)}">
   <meta property="og:description" content="${escapeHtml(description)}">
   <meta property="og:site_name" content="claudereview.com">
   <meta name="twitter:card" content="summary">
@@ -1011,9 +1021,9 @@ function generateLandingHtml(user: User | null): string {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>claudereview — Share Claude Code Sessions</title>
-  <meta name="description" content="Share your Claude Code sessions for code review. End-to-end encrypted, beautiful viewer. Drop a link in your PR.">
+  <meta name="description" content="Share your Claude Code sessions for code review. Encrypted, beautiful viewer. Drop a link in your PR.">
   <meta property="og:title" content="claudereview — Share Claude Code Sessions">
-  <meta property="og:description" content="Share how the code was built, not just the final diff. E2E encrypted.">
+  <meta property="og:description" content="Share how the code was built, not just the final diff. Encrypted.">
   <meta property="og:type" content="website">
   <meta property="og:image" content="https://claudereview.com/og-image.png">
   <meta property="og:image:width" content="1200">
@@ -1041,7 +1051,7 @@ function generateLandingHtml(user: User | null): string {
       <div class="hero-badge">Open Source</div>
       <h1>Share Claude Code sessions<br>for code review</h1>
       <p class="hero-subtitle">
-        Drop a link in your PR so reviewers can see how the code was built, not just the final diff. End-to-end encrypted.
+        Drop a link in your PR so reviewers can see how the code was built, not just the final diff. Encrypted.
       </p>
       <div class="hero-actions">
         <a href="#install" class="btn-primary">Get Started</a>
@@ -1083,8 +1093,8 @@ function generateLandingHtml(user: User | null): string {
       <div class="features-grid">
         <div class="feature-card">
           <div class="feature-icon">◇</div>
-          <h3>End-to-end encrypted</h3>
-          <p>Encryption keys never touch our servers. We can't read your sessions even if we wanted to.</p>
+          <h3>Encrypted</h3>
+          <p>Sessions are encrypted before upload. Password-protected sessions use client-side key derivation.</p>
         </div>
         <div class="feature-card">
           <div class="feature-icon">→</div>
@@ -1178,6 +1188,7 @@ Return the URL to me.</pre>
     <footer>
       <div class="footer-links">
         <a href="https://github.com/vignesh07/claudereview">GitHub</a>
+        <a href="/privacy">Privacy</a>
         <a href="/dashboard">Dashboard</a>
       </div>
       <p class="footer-note">Built for developers who use Claude Code</p>
@@ -1225,6 +1236,310 @@ Return the URL to me.</pre>
     window.addEventListener('scroll', () => {
       document.querySelector('header').classList.toggle('scrolled', window.scrollY > 10);
     });
+  </script>
+</body>
+</html>`;
+}
+
+function generatePrivacyHtml(user: User | null): string {
+  const userSection = user
+    ? `<a href="/dashboard" class="user-link">
+        <img src="${escapeHtml(user.githubAvatarUrl || '')}" alt="" class="avatar">
+        ${escapeHtml(user.githubUsername)}
+      </a>`
+    : `<a href="/auth/github" class="login-btn"><svg class="github-icon" viewBox="0 0 16 16" width="16" height="16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>Sign in with GitHub</a>`;
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Privacy & Security - claudereview</title>
+  <meta name="description" content="How claudereview handles your data and protects your privacy.">
+  <style>${LANDING_CSS}
+    .privacy-content {
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 80px 24px;
+    }
+    .privacy-content h1 {
+      font-size: 2.5rem;
+      font-weight: 600;
+      margin-bottom: 16px;
+      color: var(--text-primary);
+    }
+    .privacy-content .subtitle {
+      color: var(--text-secondary);
+      font-size: 1.1rem;
+      margin-bottom: 48px;
+    }
+    .privacy-content h2 {
+      font-size: 1.5rem;
+      font-weight: 600;
+      margin: 48px 0 16px;
+      color: var(--text-primary);
+    }
+    .privacy-content h3 {
+      font-size: 1.1rem;
+      font-weight: 600;
+      margin: 24px 0 12px;
+      color: var(--text-primary);
+    }
+    .privacy-content p, .privacy-content li {
+      color: var(--text-secondary);
+      line-height: 1.7;
+      margin-bottom: 16px;
+    }
+    .privacy-content ul {
+      padding-left: 24px;
+      margin-bottom: 16px;
+    }
+    .privacy-content li {
+      margin-bottom: 8px;
+    }
+    .privacy-content code {
+      background: var(--surface);
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-family: 'DM Mono', monospace;
+      font-size: 0.9em;
+    }
+    .privacy-content .highlight-box {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+      margin: 24px 0;
+    }
+    .privacy-content .highlight-box h3 {
+      margin-top: 0;
+      color: var(--accent);
+    }
+    .privacy-content .diagram {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 24px;
+      margin: 24px 0;
+      font-family: 'DM Mono', monospace;
+      font-size: 0.85rem;
+      line-height: 1.5;
+      overflow-x: auto;
+      white-space: pre;
+      color: var(--text-secondary);
+    }
+    .privacy-content .badge {
+      display: inline-block;
+      padding: 4px 12px;
+      border-radius: 999px;
+      font-size: 0.8rem;
+      font-weight: 500;
+      margin-right: 8px;
+    }
+    .privacy-content .badge.green {
+      background: rgba(34, 197, 94, 0.1);
+      color: #22c55e;
+    }
+    .privacy-content .badge.blue {
+      background: rgba(59, 130, 246, 0.1);
+      color: #3b82f6;
+    }
+    .privacy-content .badge.yellow {
+      background: rgba(234, 179, 8, 0.1);
+      color: #eab308;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="logo">
+        <span class="logo-icon">◈</span>
+        <a href="/" class="logo-text">claude<span class="accent">review</span></a>
+      </div>
+      <div class="header-right">
+        <button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme">
+          <span class="theme-icon">◐</span>
+        </button>
+        ${userSection}
+      </div>
+    </header>
+
+    <div class="privacy-content">
+      <h1>Privacy & Security</h1>
+      <p class="subtitle">How claudereview handles your data and protects your sessions.</p>
+
+      <h2>Overview</h2>
+      <p>claudereview is designed with privacy in mind. All sessions are encrypted before they leave your machine. However, the level of protection depends on how you choose to share:</p>
+
+      <div class="highlight-box">
+        <h3><span class="badge green">Password-Protected</span> True End-to-End Encryption</h3>
+        <p>When you share with <code>--private "password"</code>, the encryption key is derived from your password using Argon2. The key never leaves your machine and is never stored on our servers. We cannot decrypt these sessions even if we wanted to.</p>
+      </div>
+
+      <div class="highlight-box">
+        <h3><span class="badge blue">Public Links</span> Encrypted at Rest</h3>
+        <p>When you share without a password, the session is encrypted with a random key. The key is embedded in the URL fragment (<code>#key=xxx</code>). For anonymous shares, the key is only in the URL. For authenticated users, we store the key so you can view your sessions from the dashboard.</p>
+      </div>
+
+      <h2>How Encryption Works</h2>
+
+      <h3>Password-Protected Sessions (True E2E)</h3>
+      <div class="diagram">┌─────────────┐     ┌──────────────────┐     ┌─────────────┐
+│   Your CLI  │────▶│ Password + Salt  │────▶│   Argon2    │
+│             │     │                  │     │ Key Derivation
+└─────────────┘     └──────────────────┘     └──────┬──────┘
+                                                    │
+                                                    ▼
+                                            ┌──────────────┐
+                                            │   AES-256    │
+                                            │  Encryption  │
+                                            └──────┬───────┘
+                                                   │
+                    ┌──────────────────────────────┘
+                    ▼
+        ┌───────────────────────┐
+        │   Encrypted Blob      │────▶ Server stores only:
+        │   (unreadable)        │      • Encrypted blob
+        └───────────────────────┘      • Salt (for key derivation)
+                                       • Basic metadata*
+
+* Metadata (title, message count) is NOT stored for private sessions.</div>
+
+      <h3>Public Link Sessions</h3>
+      <div class="diagram">┌─────────────┐     ┌──────────────────┐     ┌─────────────┐
+│   Your CLI  │────▶│  Random 256-bit  │────▶│   AES-256   │
+│             │     │      Key         │     │  Encryption │
+└─────────────┘     └──────────────────┘     └──────┬──────┘
+                                                    │
+                    ┌───────────────────────────────┘
+                    ▼
+        ┌───────────────────────┐
+        │   Encrypted Blob      │────▶ Server stores:
+        │   (unreadable)        │      • Encrypted blob
+        └───────────────────────┘      • Metadata
+                                       • Key (for authenticated users only)
+
+URL: claudereview.com/s/abc123#key=xxxxx
+                                └─────┘
+                                Fragment never sent to server</div>
+
+      <h2>What We Store</h2>
+
+      <table style="width: 100%; border-collapse: collapse; margin: 24px 0;">
+        <thead>
+          <tr style="border-bottom: 1px solid var(--border);">
+            <th style="text-align: left; padding: 12px 8px; color: var(--text-primary);">Data</th>
+            <th style="text-align: center; padding: 12px 8px; color: var(--text-primary);">Public (Anonymous)</th>
+            <th style="text-align: center; padding: 12px 8px; color: var(--text-primary);">Public (Signed In)</th>
+            <th style="text-align: center; padding: 12px 8px; color: var(--text-primary);">Password-Protected</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr style="border-bottom: 1px solid var(--border);">
+            <td style="padding: 12px 8px; color: var(--text-secondary);">Encrypted session blob</td>
+            <td style="text-align: center; padding: 12px 8px;">✓</td>
+            <td style="text-align: center; padding: 12px 8px;">✓</td>
+            <td style="text-align: center; padding: 12px 8px;">✓</td>
+          </tr>
+          <tr style="border-bottom: 1px solid var(--border);">
+            <td style="padding: 12px 8px; color: var(--text-secondary);">Session title</td>
+            <td style="text-align: center; padding: 12px 8px;">✓</td>
+            <td style="text-align: center; padding: 12px 8px;">✓</td>
+            <td style="text-align: center; padding: 12px 8px;">✗</td>
+          </tr>
+          <tr style="border-bottom: 1px solid var(--border);">
+            <td style="padding: 12px 8px; color: var(--text-secondary);">Message/tool counts</td>
+            <td style="text-align: center; padding: 12px 8px;">✓</td>
+            <td style="text-align: center; padding: 12px 8px;">✓</td>
+            <td style="text-align: center; padding: 12px 8px;">✗</td>
+          </tr>
+          <tr style="border-bottom: 1px solid var(--border);">
+            <td style="padding: 12px 8px; color: var(--text-secondary);">Encryption key</td>
+            <td style="text-align: center; padding: 12px 8px;">✗ (URL only)</td>
+            <td style="text-align: center; padding: 12px 8px;">✓ (for dashboard)</td>
+            <td style="text-align: center; padding: 12px 8px;">✗ (derived from password)</td>
+          </tr>
+          <tr style="border-bottom: 1px solid var(--border);">
+            <td style="padding: 12px 8px; color: var(--text-secondary);">User association</td>
+            <td style="text-align: center; padding: 12px 8px;">✗</td>
+            <td style="text-align: center; padding: 12px 8px;">✓</td>
+            <td style="text-align: center; padding: 12px 8px;">✓ (if signed in)</td>
+          </tr>
+          <tr>
+            <td style="padding: 12px 8px; color: var(--text-secondary);">Salt (for key derivation)</td>
+            <td style="text-align: center; padding: 12px 8px;">✗</td>
+            <td style="text-align: center; padding: 12px 8px;">✗</td>
+            <td style="text-align: center; padding: 12px 8px;">✓</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>Can We Read Your Sessions?</h2>
+
+      <ul>
+        <li><strong>Password-protected sessions:</strong> <span class="badge green">No</span> The key is derived from your password and never stored. We cannot decrypt these even with database access.</li>
+        <li><strong>Public sessions (signed in):</strong> <span class="badge yellow">Technically yes</span> We store the encryption key to enable dashboard viewing. However, we do not access session content and the code is open source for you to verify.</li>
+        <li><strong>Public sessions (anonymous):</strong> <span class="badge green">No</span> The key exists only in the URL fragment which is never sent to our servers.</li>
+      </ul>
+
+      <h2>Recommendations</h2>
+      <ul>
+        <li>Use <code>--private "password"</code> for sensitive sessions that you want to guarantee cannot be read by anyone (including us)</li>
+        <li>Share public links for routine code reviews where convenience matters more than maximum privacy</li>
+        <li>If you lose a password for a private session, the session is unrecoverable by design</li>
+      </ul>
+
+      <h2>Open Source</h2>
+      <p>claudereview is open source. You can audit the code yourself:</p>
+      <ul>
+        <li><a href="https://github.com/vignesh07/claudereview" style="color: var(--accent);">GitHub Repository</a></li>
+        <li>Self-host if you prefer complete control</li>
+      </ul>
+
+      <h2>Data Retention</h2>
+      <ul>
+        <li>Sessions are stored indefinitely unless you delete them from your dashboard</li>
+        <li>Anonymous sessions cannot be deleted (you don't own them)</li>
+        <li>We may add session expiration features in the future</li>
+      </ul>
+
+      <h2>Questions?</h2>
+      <p>Open an issue on <a href="https://github.com/vignesh07/claudereview/issues" style="color: var(--accent);">GitHub</a> or contact us at privacy@claudereview.com.</p>
+    </div>
+
+    <footer>
+      <div class="footer-links">
+        <a href="https://github.com/vignesh07/claudereview">GitHub</a>
+        <a href="/privacy">Privacy</a>
+        <a href="/dashboard">Dashboard</a>
+      </div>
+      <p class="footer-note">Built for developers who use Claude Code</p>
+    </footer>
+  </div>
+
+  <script>
+    function toggleTheme() {
+      const html = document.documentElement;
+      const current = html.getAttribute('data-theme');
+      const next = current === 'dark' ? 'light' : 'dark';
+      html.setAttribute('data-theme', next);
+      localStorage.setItem('theme', next);
+      updateThemeIcon();
+    }
+
+    function updateThemeIcon() {
+      const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+      document.querySelector('.theme-icon').textContent = isDark ? '○' : '◐';
+    }
+
+    const saved = localStorage.getItem('theme');
+    if (saved) {
+      document.documentElement.setAttribute('data-theme', saved);
+    } else if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
+      document.documentElement.setAttribute('data-theme', 'dark');
+    }
+    updateThemeIcon();
   </script>
 </body>
 </html>`;

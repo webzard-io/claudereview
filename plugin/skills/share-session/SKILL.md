@@ -69,9 +69,10 @@ https://claudereview.com/s/abc123#key=<base64_key>
 
 ## Privacy Note
 
-- Sessions are end-to-end encrypted
-- The encryption key is in the URL fragment (never sent to server)
-- Only people with the full link can view the session
+- Sessions are encrypted before upload
+- For public links: encryption key is in the URL fragment (never sent to server)
+- For password-protected links: key is derived from password client-side
+- Only people with the full link (or password) can view the session
 
 ## Alternative: Use the CLI
 

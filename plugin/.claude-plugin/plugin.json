@@ -1,6 +1,6 @@
 {
   "name": "claudereview",
-  "description": "Share Claude Code sessions for code review with E2E encryption",
+  "description": "Share Claude Code sessions for code review with encryption",
   "version": "0.1.0",
   "author": {
     "name": "Vignesh Natarajan",

@@ -89,6 +89,155 @@ async function getSessionContent(sessionId: string): Promise<string | null> {
   return await readFile(session.path, 'utf-8');
 }
 
+// Session parsing (matching CLI parser)
+interface ParsedMessage {
+  id: string;
+  type: 'human' | 'assistant' | 'tool_call' | 'tool_result';
+  content: string;
+  timestamp: string;
+  toolName?: string;
+  toolInput?: Record<string, unknown>;
+  toolId?: string;
+  toolOutput?: string;
+  isError?: boolean;
+}
+
+interface SessionMetadata {
+  messageCount: number;
+  toolCount: number;
+  durationSeconds: number;
+  startTime: string;
+  endTime: string;
+  tools: Record<string, number>;
+}
+
+interface ParsedSession {
+  id: string;
+  title: string;
+  messages: ParsedMessage[];
+  metadata: SessionMetadata;
+}
+
+function parseSessionContent(content: string, sessionId: string, customTitle?: string): ParsedSession {
+  const lines = content.trim().split('\n').filter(line => line.trim());
+  const messages: ParsedMessage[] = [];
+  let title = customTitle || 'Untitled Session';
+  const timestamps: number[] = [];
+  const toolCounts: Record<string, number> = {};
+  let messageIndex = 0;
+
+  for (const line of lines) {
+    try {
+      const raw = JSON.parse(line);
+
+      // Extract title from summary
+      if (raw.type === 'summary' && raw.summary && !customTitle) {
+        title = raw.summary;
+        continue;
+      }
+
+      if (raw.type === 'file-history-snapshot') continue;
+      if (!raw.message) continue;
+
+      const timestamp = raw.timestamp || new Date().toISOString();
+      if (raw.timestamp) {
+        timestamps.push(new Date(raw.timestamp).getTime());
+      }
+
+      if (raw.type === 'user') {
+        if (typeof raw.message.content === 'string') {
+          // Human message
+          messages.push({
+            id: `msg-${messageIndex++}`,
+            type: 'human',
+            content: raw.message.content,
+            timestamp,
+          });
+        } else if (Array.isArray(raw.message.content)) {
+          // Tool results
+          for (const block of raw.message.content) {
+            if (block.type === 'tool_result') {
+              let output = '';
+              if (raw.toolUseResult?.stdout) output = raw.toolUseResult.stdout;
+              if (raw.toolUseResult?.stderr) output += (output ? '\n' : '') + raw.toolUseResult.stderr;
+              if (!output && typeof block.content === 'string') output = block.content;
+
+              messages.push({
+                id: `msg-${messageIndex++}`,
+                type: 'tool_result',
+                content: output,
+                timestamp,
+                toolId: block.tool_use_id,
+                toolOutput: output,
+                isError: block.is_error,
+              });
+            }
+          }
+        }
+      } else if (raw.type === 'assistant' && Array.isArray(raw.message.content)) {
+        for (const block of raw.message.content) {
+          if (block.type === 'thinking') continue;
+
+          if (block.type === 'text' && block.text) {
+            messages.push({
+              id: `msg-${messageIndex++}`,
+              type: 'assistant',
+              content: block.text,
+              timestamp,
+            });
+          } else if (block.type === 'tool_use') {
+            toolCounts[block.name] = (toolCounts[block.name] || 0) + 1;
+            messages.push({
+              id: `msg-${messageIndex++}`,
+              type: 'tool_call',
+              content: formatToolCall(block.name, block.input),
+              timestamp,
+              toolName: block.name,
+              toolInput: block.input,
+              toolId: block.id,
+            });
+          }
+        }
+      }
+    } catch {}
+  }
+
+  // Use first human message as title if no summary
+  if (title === 'Untitled Session') {
+    const firstHuman = messages.find(m => m.type === 'human');
+    if (firstHuman) {
+      title = firstHuman.content.slice(0, 100) + (firstHuman.content.length > 100 ? '...' : '');
+    }
+  }
+
+  const startTime = timestamps.length > 0 ? new Date(Math.min(...timestamps)).toISOString() : new Date().toISOString();
+  const endTime = timestamps.length > 0 ? new Date(Math.max(...timestamps)).toISOString() : new Date().toISOString();
+  const durationSeconds = timestamps.length >= 2 ? Math.round((Math.max(...timestamps) - Math.min(...timestamps)) / 1000) : 0;
+
+  return {
+    id: sessionId,
+    title,
+    messages,
+    metadata: {
+      messageCount: messages.filter(m => m.type === 'human' || m.type === 'assistant').length,
+      toolCount: Object.values(toolCounts).reduce((a, b) => a + b, 0),
+      durationSeconds,
+      startTime,
+      endTime,
+      tools: toolCounts,
+    },
+  };
+}
+
+function formatToolCall(name: string, input?: Record<string, unknown>): string {
+  if (!input) return name;
+  if (name === 'Bash' && input.command) return `$ ${input.command}`;
+  if (name === 'Read' && input.file_path) return `read ${input.file_path}`;
+  if (name === 'Write' && input.file_path) return `write ${input.file_path}`;
+  if (name === 'Edit' && input.file_path) return `edit ${input.file_path}`;
+  return `${name}: ${JSON.stringify(input)}`;
+}
+
 // Simple encryption (matching the CLI)
 function generateKey(): Uint8Array {
   return crypto.getRandomValues(new Uint8Array(32));
@@ -112,45 +261,14 @@ async function shareSession(sessionId: string, title?: string): Promise<{ url: s
     return { error: `Session not found: ${sessionId}` };
   }
 
-  // Parse session for metadata
-  const lines = content.trim().split('\n');
-  let messageCount = 0;
-  let toolCount = 0;
-  let sessionTitle = title || 'Untitled Session';
-  const timestamps: number[] = [];
+  // Parse session into structured format (matching CLI parser)
+  const parsedSession = parseSessionContent(content, sessionId, title);
 
-  for (const line of lines) {
-    try {
-      const parsed = JSON.parse(line);
-      if (parsed.type === 'summary' && parsed.summary && !title) {
-        sessionTitle = parsed.summary;
-      }
-      if (parsed.type === 'user' || parsed.type === 'assistant') {
-        messageCount++;
-      }
-      if (parsed.timestamp) {
-        timestamps.push(new Date(parsed.timestamp).getTime());
-      }
-      if (parsed.message?.content && Array.isArray(parsed.message.content)) {
-        toolCount += parsed.message.content.filter((b: any) => b.type === 'tool_use').length;
-      }
-    } catch {}
-  }
-
-  const durationSeconds = timestamps.length >= 2
-    ? Math.round((Math.max(...timestamps) - Math.min(...timestamps)) / 1000)
-    : 0;
-
-  // Encrypt
+  // Encrypt the parsed session data (not raw JSONL)
   const key = generateKey();
-  const sessionData = JSON.stringify({
-    id: sessionId,
-    title: sessionTitle,
-    messages: [], // We'd need full parsing here - simplified for now
-    metadata: { messageCount, toolCount, durationSeconds, startTime: new Date().toISOString(), endTime: new Date().toISOString(), tools: {} }
-  });
+  const { ciphertext, iv } = await encrypt(JSON.stringify(parsedSession), key);
 
-  const { ciphertext, iv } = await encrypt(content, key);
+  const { messageCount, toolCount, durationSeconds } = parsedSession.metadata;
 
   // Upload
   try {
@@ -162,7 +280,7 @@ async function shareSession(sessionId: string, title?: string): Promise<{ url: s
         iv,
         visibility: 'public',
         metadata: {
-          title: sessionTitle.slice(0, 200),
+          title: parsedSession.title.slice(0, 200),
           messageCount,
           toolCount,
           durationSeconds,
@@ -206,7 +324,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'share_session',
-      description: 'Share a Claude Code session to claudereview.com and get an encrypted shareable URL. The session is end-to-end encrypted.',
+      description: 'Share a Claude Code session to claudereview.com and get an encrypted shareable URL.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -261,7 +379,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     return {
-      content: [{ type: 'text', text: `Session shared successfully!\n\nURL: ${result.url}\n\nThis link is end-to-end encrypted. Only people with this exact URL can view the session.` }],
+      content: [{ type: 'text', text: `Session shared successfully!\n\nURL: ${result.url}\n\nThis link is encrypted. Only people with this exact URL can view the session.` }],
     };
   }
 

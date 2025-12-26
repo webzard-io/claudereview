@@ -1,6 +1,6 @@
 # claudereview
 
-Share Claude Code sessions for code review. End-to-end encrypted.
+Share Claude Code sessions for code review. Encrypted.
 
 ## Installation
 
@@ -36,7 +36,7 @@ ccshare export --last -o session.html
 
 ## Features
 
-- **E2E Encrypted**: Sessions are encrypted client-side. Keys never touch the server.
+- **Encrypted**: Sessions are encrypted before upload. Password-protected sessions use client-side key derivation.
 - **Public & Private Links**: Share openly or protect with a password.
 - **TUI Aesthetic**: Beautiful terminal-style viewer.
 - **Deep Linking**: Link directly to specific messages.

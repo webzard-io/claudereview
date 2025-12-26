@@ -1,6 +1,6 @@
 # claudereview
 
-Share Claude Code sessions for code review with E2E encryption.
+Share Claude Code sessions for code review with encryption.
 
 ## Commands
 
