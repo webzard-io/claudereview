@@ -232,7 +232,22 @@ program
         console.log(c('dim', `  Duration: ${formatDuration(session.metadata.durationSeconds)}`));
       }
 
-      const sessionJson = JSON.stringify(session);
+      // Render session to full HTML with all features
+      const renderedHtml = renderSessionToHtml(session, {
+        theme: 'dark',
+        embed: true, // No chrome, just the content
+      });
+
+      // Create payload with both rendered HTML and metadata
+      const payload = JSON.stringify({
+        html: renderedHtml,
+        session: {
+          id: session.id,
+          title: session.title,
+          metadata: session.metadata,
+        }
+      });
+
       let encryptedBlob: string;
       let iv: string;
       let key: string | undefined;
@@ -241,13 +256,13 @@ program
 
       if (options.private) {
         // Encrypt with password
-        const encrypted = await encryptForPrivate(sessionJson, options.private);
+        const encrypted = await encryptForPrivate(payload, options.private);
         encryptedBlob = encrypted.ciphertext;
         iv = encrypted.iv;
         salt = encrypted.salt;
       } else {
         // Encrypt with random key
-        const encrypted = encryptForPublic(sessionJson);
+        const encrypted = encryptForPublic(payload);
         encryptedBlob = encrypted.ciphertext;
         iv = encrypted.iv;
         key = encrypted.key;

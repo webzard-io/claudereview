@@ -2534,7 +2534,7 @@ const VIEWER_SCRIPT = `
   }
 
   async function decryptAndRender(sessionData, keyOrPassword) {
-    const session = await decryptSession(
+    const decrypted = await decryptSession(
       sessionData.encryptedBlob,
       sessionData.iv,
       keyOrPassword,
@@ -2544,25 +2544,47 @@ const VIEWER_SCRIPT = `
     passwordPrompt.classList.add('hidden');
     viewer.classList.remove('hidden');
 
-    // Render header
-    document.getElementById('header').innerHTML = \`
-      <div class="header-main">
-        <div class="logo">
-          <span class="logo-icon">◈</span>
-          <span class="logo-text">claude<span class="accent">review</span></span>
-        </div>
-        <div class="session-id">\${session.id.slice(0, 8)}</div>
-      </div>
-      <h1 class="session-title">\${escapeHtml(session.title)}</h1>
-      <div class="session-meta">
-        <span>\${session.metadata.messageCount} messages</span>
-        <span>·</span>
-        <span>\${formatDuration(session.metadata.durationSeconds)}</span>
-      </div>
-    \`;
+    // Check if this is the new format with pre-rendered HTML
+    if (decrypted.html) {
+      // New format: use pre-rendered HTML directly
+      const session = decrypted.session;
 
-    // Render messages
-    document.getElementById('messages').innerHTML = session.messages.map(renderMessage).join('');
+      document.getElementById('header').innerHTML = \`
+        <div class="header-main">
+          <div class="logo">
+            <span class="logo-icon">◈</span>
+            <a href="/" class="logo-text">claude<span class="accent">review</span></a>
+          </div>
+        </div>
+      \`;
+
+      // Insert the pre-rendered HTML (it includes its own styles)
+      document.getElementById('messages').innerHTML = decrypted.html;
+    } else {
+      // Legacy format: render from session data
+      const session = decrypted;
+
+      document.getElementById('header').innerHTML = \`
+        <div class="header-main">
+          <div class="logo">
+            <span class="logo-icon">◈</span>
+            <a href="/" class="logo-text">claude<span class="accent">review</span></a>
+          </div>
+          <div class="session-id">\${session.id ? session.id.slice(0, 8) : ''}</div>
+        </div>
+        <h1 class="session-title">\${escapeHtml(session.title || 'Session')}</h1>
+        <div class="session-meta">
+          <span>\${session.metadata?.messageCount || 0} messages</span>
+          <span>·</span>
+          <span>\${formatDuration(session.metadata?.durationSeconds || 0)}</span>
+        </div>
+      \`;
+
+      // Render messages the old way
+      if (session.messages) {
+        document.getElementById('messages').innerHTML = session.messages.map(renderMessage).join('');
+      }
+    }
   }
 
   function renderMessage(msg) {
