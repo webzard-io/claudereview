@@ -1,0 +1,12 @@
+{
+  "name": "claudereview",
+  "description": "Share Claude Code sessions for code review with E2E encryption",
+  "version": "0.1.0",
+  "author": {
+    "name": "Vignesh Natarajan",
+    "url": "https://github.com/vignesh07"
+  },
+  "repository": "https://github.com/vignesh07/claudereview",
+  "homepage": "https://claudereview.com",
+  "keywords": ["session-sharing", "code-review", "encryption"]
+}

@@ -1,12 +1,15 @@
 {
   "name": "claudereview",
   "version": "0.1.0",
-  "description": "Share Claude Code sessions for code review",
+  "description": "Share Claude Code sessions for code review with E2E encryption",
   "type": "module",
-  "private": true,
   "bin": {
     "ccshare": "./src/cli.ts"
   },
+  "files": [
+    "src/**/*.ts",
+    "README.md"
+  ],
   "scripts": {
     "dev": "bun run --watch src/server.ts",
     "start": "bun run src/server.ts",
@@ -14,6 +17,27 @@
     "db:push": "drizzle-kit push",
     "db:generate": "drizzle-kit generate",
     "db:studio": "drizzle-kit studio"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "code-review",
+    "session-sharing",
+    "encryption",
+    "e2e"
+  ],
+  "author": "Vignesh Natarajan",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vignesh07/claudereview.git"
+  },
+  "homepage": "https://claudereview.com",
+  "bugs": {
+    "url": "https://github.com/vignesh07/claudereview/issues"
+  },
+  "engines": {
+    "bun": ">=1.0.0"
   },
   "devDependencies": {
     "@types/bun": "latest",

@@ -1,0 +1,15 @@
+{
+  "name": "@claudereview/mcp-server",
+  "version": "0.1.0",
+  "description": "MCP server for sharing Claude Code sessions",
+  "type": "module",
+  "bin": {
+    "claudereview-mcp": "./server.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "engines": {
+    "bun": ">=1.0.0"
+  }
+}
