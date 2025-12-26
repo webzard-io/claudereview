@@ -294,7 +294,7 @@ app.patch('/api/sessions/:id', async (c) => {
           return c.json({ error: 'Password required for private sessions' }, 400);
         }
 
-        const encrypted = await encryptForPrivate(decryptedData, body.password);
+        const encrypted = encryptForPrivate(decryptedData, body.password);
         updates.encryptedBlob = encrypted.ciphertext;
         updates.iv = encrypted.iv;
         updates.salt = encrypted.salt;

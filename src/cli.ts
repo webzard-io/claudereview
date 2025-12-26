@@ -181,7 +181,7 @@ program
       if (options.private) {
         // Encrypt with password
         const sessionJson = JSON.stringify(session);
-        const { ciphertext, iv, salt } = await encryptForPrivate(sessionJson, options.private);
+        const { ciphertext, iv, salt } = encryptForPrivate(sessionJson, options.private);
 
         html = renderSessionToHtml(session, {
           ...renderOptions,
@@ -256,7 +256,7 @@ program
 
       if (options.private) {
         // Encrypt with password
-        const encrypted = await encryptForPrivate(payload, options.private);
+        const encrypted = encryptForPrivate(payload, options.private);
         encryptedBlob = encrypted.ciphertext;
         iv = encrypted.iv;
         salt = encrypted.salt;

@@ -1,19 +1,10 @@
-import { randomBytes, createCipheriv, createDecipheriv } from 'crypto';
-import argon2 from 'argon2';
+import { randomBytes, createCipheriv, createDecipheriv, pbkdf2Sync } from 'crypto';
 
 const ALGORITHM = 'aes-256-gcm';
 const IV_LENGTH = 12; // 96 bits for GCM
 const KEY_LENGTH = 32; // 256 bits
 const AUTH_TAG_LENGTH = 16;
-
-// Argon2 parameters (secure defaults)
-const ARGON2_OPTIONS = {
-  type: argon2.argon2id,
-  memoryCost: 65536, // 64 MB
-  timeCost: 3,
-  parallelism: 4,
-  hashLength: KEY_LENGTH,
-};
+const PBKDF2_ITERATIONS = 600000; // Match browser Web Crypto API
 
 /**
  * Generate a random encryption key for public sessions
@@ -31,16 +22,13 @@ export function generateSalt(): string {
 }
 
 /**
- * Derive encryption key from password using Argon2
+ * Derive encryption key from password using PBKDF2
+ * Uses same parameters as browser Web Crypto API for compatibility
  */
-export async function deriveKey(password: string, salt: string): Promise<string> {
+export function deriveKey(password: string, salt: string): string {
   const saltBuffer = Buffer.from(salt, 'base64url');
-  const hash = await argon2.hash(password, {
-    ...ARGON2_OPTIONS,
-    salt: saltBuffer,
-    raw: true,
-  });
-  return Buffer.from(hash).toString('base64url');
+  const key = pbkdf2Sync(password, saltBuffer, PBKDF2_ITERATIONS, KEY_LENGTH, 'sha256');
+  return key.toString('base64url');
 }
 
 /**
@@ -108,16 +96,16 @@ export function encryptForPublic(data: string): {
 /**
  * Encrypt session data for private sharing (password-based)
  */
-export async function encryptForPrivate(
+export function encryptForPrivate(
   data: string,
   password: string
-): Promise<{
+): {
   ciphertext: string;
   iv: string;
   salt: string;
-}> {
+} {
   const salt = generateSalt();
-  const key = await deriveKey(password, salt);
+  const key = deriveKey(password, salt);
   const { ciphertext, iv } = encrypt(data, key);
   return { ciphertext, iv, salt };
 }
@@ -125,13 +113,13 @@ export async function encryptForPrivate(
 /**
  * Decrypt session data for private sharing
  */
-export async function decryptPrivate(
+export function decryptPrivate(
   ciphertext: string,
   iv: string,
   salt: string,
   password: string
-): Promise<string> {
-  const key = await deriveKey(password, salt);
+): string {
+  const key = deriveKey(password, salt);
   return decrypt(ciphertext, iv, key);
 }
 
@@ -144,9 +132,8 @@ const ALGORITHM = 'AES-GCM';
 const IV_LENGTH = 12;
 const AUTH_TAG_LENGTH = 16;
 
-// Argon2 is not available in browsers, so for private sessions
-// we'll use PBKDF2 as a fallback (less secure but works everywhere)
-// For production, consider using argon2-browser WASM module
+// PBKDF2 for password-based key derivation
+// Server and browser both use PBKDF2 with same parameters for compatibility
 
 async function deriveKeyBrowser(password, saltBase64) {
   const salt = base64UrlDecode(saltBase64);
