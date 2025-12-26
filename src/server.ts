@@ -275,6 +275,103 @@ app.patch('/api/sessions/:id', async (c) => {
   return c.json({ success: true });
 });
 
+// ============================================================================
+// API Keys Management
+// ============================================================================
+
+// Hash function for API keys
+async function hashApiKey(key: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(key);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// Create API key
+app.post('/api/keys', async (c) => {
+  const user = await getCurrentUser(c);
+  if (!user) {
+    return c.json({ error: 'Not authenticated' }, 401);
+  }
+
+  if (!db) {
+    return c.json({ error: 'Database not configured' }, 500);
+  }
+
+  const body = await c.req.json() as { name?: string };
+  const name = body.name || 'CLI Key';
+
+  // Generate a random API key
+  const rawKey = `cr_${nanoid(32)}`;
+  const keyHash = await hashApiKey(rawKey);
+  const keyId = nanoid(12);
+
+  await db.insert(apiKeys).values({
+    id: keyId,
+    userId: user.id,
+    keyHash,
+    name: name.slice(0, 50),
+  });
+
+  // Return the raw key only once - we only store the hash
+  return c.json({
+    id: keyId,
+    key: rawKey,
+    name,
+    createdAt: new Date().toISOString(),
+  });
+});
+
+// List API keys
+app.get('/api/keys', async (c) => {
+  const user = await getCurrentUser(c);
+  if (!user) {
+    return c.json({ error: 'Not authenticated' }, 401);
+  }
+
+  if (!db) {
+    return c.json({ error: 'Database not configured' }, 500);
+  }
+
+  const keys = await db.select({
+    id: apiKeys.id,
+    name: apiKeys.name,
+    createdAt: apiKeys.createdAt,
+    lastUsedAt: apiKeys.lastUsedAt,
+  })
+    .from(apiKeys)
+    .where(eq(apiKeys.userId, user.id))
+    .orderBy(desc(apiKeys.createdAt));
+
+  return c.json({ keys });
+});
+
+// Delete API key
+app.delete('/api/keys/:id', async (c) => {
+  const user = await getCurrentUser(c);
+  if (!user) {
+    return c.json({ error: 'Not authenticated' }, 401);
+  }
+
+  const keyId = c.req.param('id');
+  if (!db) {
+    return c.json({ error: 'Database not configured' }, 500);
+  }
+
+  // Verify ownership
+  const [key] = await db.select().from(apiKeys).where(
+    and(eq(apiKeys.id, keyId), eq(apiKeys.userId, user.id))
+  ).limit(1);
+
+  if (!key) {
+    return c.json({ error: 'API key not found' }, 404);
+  }
+
+  await db.delete(apiKeys).where(eq(apiKeys.id, keyId));
+  return c.json({ success: true });
+});
+
 // Upload schema
 const uploadSchema = z.object({
   encryptedBlob: z.string(),
@@ -307,17 +404,18 @@ app.post('/api/upload', async (c) => {
       const authHeader = c.req.header('Authorization');
       if (authHeader?.startsWith('Bearer ') && db) {
         const token = authHeader.slice(7);
-        // Hash and lookup API key
-        const [apiKey] = await db.select()
+        // Hash the token and lookup API key
+        const tokenHash = await hashApiKey(token);
+        const [apiKeyRecord] = await db.select()
           .from(apiKeys)
-          .where(eq(apiKeys.keyHash, token))
+          .where(eq(apiKeys.keyHash, tokenHash))
           .limit(1);
-        if (apiKey) {
-          userId = apiKey.userId;
+        if (apiKeyRecord) {
+          userId = apiKeyRecord.userId;
           // Update last used
           await db.update(apiKeys)
             .set({ lastUsedAt: new Date() })
-            .where(eq(apiKeys.id, apiKey.id));
+            .where(eq(apiKeys.id, apiKeyRecord.id));
         }
       }
     }
@@ -734,6 +832,19 @@ function generateDashboardHtml(user: User): string {
         <p>Share your first Claude Code session using the CLI or MCP server.</p>
         <pre><code>ccshare share --last</code></pre>
       </div>
+
+      <section class="api-keys-section">
+        <h2>API Keys</h2>
+        <p class="subtitle">Use API keys to link CLI sessions to your account</p>
+
+        <div id="api-keys-list" class="api-keys-list">
+          <div class="loading">Loading...</div>
+        </div>
+
+        <button id="create-key-btn" class="btn-primary" style="margin-top: 1rem;">
+          + Generate New Key
+        </button>
+      </section>
     </main>
   </div>
 
@@ -764,6 +875,39 @@ function generateDashboardHtml(user: User): string {
       <div class="modal-actions">
         <button type="button" class="btn-secondary" onclick="closeDeleteModal()">Cancel</button>
         <button type="button" class="btn-danger" id="confirm-delete">Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- New API Key Modal -->
+  <div id="new-key-modal" class="modal hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-content">
+      <h2>API Key Created</h2>
+      <p>Copy this key now. You won't be able to see it again!</p>
+      <div class="key-display">
+        <code id="new-key-value"></code>
+        <button class="btn-icon" onclick="copyNewKey()" title="Copy">📋</button>
+      </div>
+      <div class="key-usage">
+        <p>Add to your shell profile:</p>
+        <pre><code>export CCSHARE_API_KEY="<span id="new-key-export"></span>"</code></pre>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-primary" onclick="closeNewKeyModal()">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Delete Key Confirmation Modal -->
+  <div id="delete-key-modal" class="modal hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-content">
+      <h2>Revoke API Key?</h2>
+      <p>This key will stop working immediately. Any CLI using it will need a new key.</p>
+      <div class="modal-actions">
+        <button type="button" class="btn-secondary" onclick="closeDeleteKeyModal()">Cancel</button>
+        <button type="button" class="btn-danger" id="confirm-delete-key">Revoke</button>
       </div>
     </div>
   </div>
@@ -903,11 +1047,107 @@ function generateDashboardHtml(user: User): string {
       el.addEventListener('click', () => {
         closeModal();
         closeDeleteModal();
+        closeNewKeyModal();
+        closeDeleteKeyModal();
       });
     });
 
-    // Load sessions on page load
+    // ========== API Keys Management ==========
+    let currentDeleteKeyId = null;
+    let currentNewKey = null;
+
+    async function loadApiKeys() {
+      try {
+        const res = await fetch('/api/keys');
+        if (!res.ok) throw new Error('Failed to load');
+        const data = await res.json();
+
+        const list = document.getElementById('api-keys-list');
+
+        if (data.keys.length === 0) {
+          list.innerHTML = '<div class="no-keys">No API keys yet. Generate one to link CLI sessions to your account.</div>';
+          return;
+        }
+
+        list.innerHTML = data.keys.map(k => \`
+          <div class="api-key-card">
+            <div class="key-info">
+              <span class="key-name">\${escapeHtml(k.name)}</span>
+              <span class="key-meta">Created \${formatDate(k.createdAt)}\${k.lastUsedAt ? ' · Last used ' + formatDate(k.lastUsedAt) : ''}</span>
+            </div>
+            <button class="btn-icon btn-danger" onclick="openDeleteKeyModal('\${k.id}')" title="Revoke">🗑️</button>
+          </div>
+        \`).join('');
+      } catch (err) {
+        document.getElementById('api-keys-list').innerHTML =
+          '<div class="error">Failed to load API keys.</div>';
+      }
+    }
+
+    document.getElementById('create-key-btn').addEventListener('click', async () => {
+      try {
+        const res = await fetch('/api/keys', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'CLI Key' })
+        });
+
+        if (!res.ok) throw new Error('Failed to create');
+        const data = await res.json();
+
+        currentNewKey = data.key;
+        document.getElementById('new-key-value').textContent = data.key;
+        document.getElementById('new-key-export').textContent = data.key;
+        document.getElementById('new-key-modal').classList.remove('hidden');
+
+        loadApiKeys();
+      } catch (err) {
+        alert('Failed to create API key');
+      }
+    });
+
+    function copyNewKey() {
+      if (currentNewKey) {
+        navigator.clipboard.writeText(currentNewKey);
+        const btn = event.target;
+        const original = btn.textContent;
+        btn.textContent = '✓';
+        setTimeout(() => btn.textContent = original, 1500);
+      }
+    }
+
+    function closeNewKeyModal() {
+      document.getElementById('new-key-modal').classList.add('hidden');
+      currentNewKey = null;
+    }
+
+    function openDeleteKeyModal(id) {
+      currentDeleteKeyId = id;
+      document.getElementById('delete-key-modal').classList.remove('hidden');
+    }
+
+    function closeDeleteKeyModal() {
+      document.getElementById('delete-key-modal').classList.add('hidden');
+      currentDeleteKeyId = null;
+    }
+
+    document.getElementById('confirm-delete-key').addEventListener('click', async () => {
+      try {
+        const res = await fetch('/api/keys/' + currentDeleteKeyId, {
+          method: 'DELETE'
+        });
+
+        if (!res.ok) throw new Error('Failed to delete');
+        closeDeleteKeyModal();
+        loadApiKeys();
+      } catch (err) {
+        alert('Failed to revoke API key');
+      }
+    });
+
+    // Load data on page load
     loadSessions();
+    loadApiKeys();
   </script>
 </body>
 </html>`;
@@ -2085,6 +2325,99 @@ main h1 {
 
 .btn-secondary:hover, .btn-primary:hover, .btn-danger:hover {
   opacity: 0.9;
+}
+
+/* API Keys Section */
+.api-keys-section {
+  margin-top: 3rem;
+  padding-top: 2rem;
+  border-top: 1px solid var(--border);
+}
+
+.api-keys-section h2 {
+  font-family: var(--font-sans);
+  font-size: 1.25rem;
+  color: var(--text-bright);
+  margin-bottom: 0.25rem;
+}
+
+.api-keys-list {
+  margin-top: 1rem;
+}
+
+.api-key-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.key-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.key-name {
+  font-weight: 500;
+  color: var(--text-bright);
+}
+
+.key-meta {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.no-keys {
+  color: var(--text-muted);
+  font-size: 0.875rem;
+  padding: 1rem 0;
+}
+
+/* New Key Modal */
+.key-display {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.key-display code {
+  font-size: 0.8rem;
+  color: var(--accent);
+  word-break: break-all;
+}
+
+.key-usage {
+  background: var(--bg-tertiary);
+  border-radius: 6px;
+  padding: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.key-usage p {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin-bottom: 0.5rem;
+}
+
+.key-usage pre {
+  font-size: 0.75rem;
+  color: var(--text);
+  overflow-x: auto;
+}
+
+.key-usage code {
+  color: var(--green);
 }
 
 .hidden { display: none !important; }
