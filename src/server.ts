@@ -6,7 +6,8 @@ import { setCookie, getCookie, deleteCookie } from 'hono/cookie';
 import { nanoid } from 'nanoid';
 import { z } from 'zod';
 import { timingSafeEqual } from 'crypto';
-import sharp from 'sharp';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import { db, sessions, users, apiKeys, sessionViews, type NewSession, type Session, type User } from './db/index.ts';
 import { eq, sql, desc, count, and, gte, between } from 'drizzle-orm';
 import { decrypt, encrypt, encryptForPublic, encryptForPrivate, generateKey, deriveKey, generateSalt } from './crypto.ts';
@@ -748,47 +749,26 @@ app.get('/', async (c) => {
   return c.html(generateLandingHtml(user));
 });
 
-// OG Image for social sharing - convert SVG to PNG for compatibility
+// OG Image for social sharing - serve static image
 let cachedOgImage: Buffer | null = null;
 
 app.get('/og-image.png', async (c) => {
   try {
-    // Use cached PNG if available
-    if (cachedOgImage) {
-      return new Response(cachedOgImage, {
-        headers: {
-          'Content-Type': 'image/png',
-          'Cache-Control': 'public, max-age=86400',
-        },
-      });
+    // Use cached image if available
+    if (!cachedOgImage) {
+      const imagePath = join(import.meta.dir, '..', 'og-image.png');
+      cachedOgImage = readFileSync(imagePath) as Buffer;
     }
 
-    const svg = generateOgImageSvg();
-
-    // Convert SVG to PNG using sharp
-    const pngBuffer = await sharp(Buffer.from(svg))
-      .png()
-      .toBuffer();
-
-    // Cache for subsequent requests
-    cachedOgImage = pngBuffer;
-
-    return new Response(pngBuffer, {
+    return new Response(cachedOgImage, {
       headers: {
         'Content-Type': 'image/png',
         'Cache-Control': 'public, max-age=86400',
       },
     });
   } catch (error) {
-    console.error('OG image generation error:', error);
-    // Fallback to SVG if PNG conversion fails
-    const svg = generateOgImageSvg();
-    return new Response(svg, {
-      headers: {
-        'Content-Type': 'image/svg+xml',
-        'Cache-Control': 'public, max-age=86400',
-      },
-    });
+    console.error('OG image error:', error);
+    return c.text('Image not found', 404);
   }
 });
 
@@ -797,66 +777,6 @@ app.get('/privacy', async (c) => {
   const user = await getCurrentUser(c);
   return c.html(generatePrivacyHtml(user));
 });
-
-function generateOgImageSvg(): string {
-  return `<svg width="1200" height="630" viewBox="0 0 1200 630" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <defs>
-    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#fafafa"/>
-      <stop offset="100%" style="stop-color:#f0f0f0"/>
-    </linearGradient>
-    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" style="stop-color:#0066ff"/>
-      <stop offset="100%" style="stop-color:#0052cc"/>
-    </linearGradient>
-  </defs>
-
-  <!-- Background -->
-  <rect width="1200" height="630" fill="url(#bg)"/>
-
-  <!-- Decorative elements -->
-  <rect x="60" y="60" width="8" height="80" rx="4" fill="#0066ff" opacity="0.15"/>
-  <rect x="80" y="60" width="8" height="120" rx="4" fill="#0066ff" opacity="0.1"/>
-  <rect x="100" y="60" width="8" height="60" rx="4" fill="#0066ff" opacity="0.08"/>
-
-  <rect x="1092" y="450" width="8" height="120" rx="4" fill="#0066ff" opacity="0.15"/>
-  <rect x="1112" y="490" width="8" height="80" rx="4" fill="#0066ff" opacity="0.1"/>
-  <rect x="1132" y="470" width="8" height="100" rx="4" fill="#0066ff" opacity="0.08"/>
-
-  <!-- Terminal preview mockup -->
-  <rect x="640" y="140" width="480" height="350" rx="16" fill="#0d1117" stroke="#30363d" stroke-width="1"/>
-  <circle cx="672" cy="168" r="6" fill="#f85149"/>
-  <circle cx="694" cy="168" r="6" fill="#d29922"/>
-  <circle cx="716" cy="168" r="6" fill="#3fb950"/>
-
-  <!-- Terminal content -->
-  <text x="672" y="220" fill="#8b949e" font-family="monospace" font-size="14">$ ccshare share --last</text>
-  <text x="672" y="250" fill="#3fb950" font-family="monospace" font-size="14">✓ Session encrypted</text>
-  <text x="672" y="280" fill="#3fb950" font-family="monospace" font-size="14">✓ Uploaded to claudereview.com</text>
-  <text x="672" y="320" fill="#c9d1d9" font-family="monospace" font-size="14">Share URL:</text>
-  <text x="672" y="350" fill="#58a6ff" font-family="monospace" font-size="13">claudereview.com/s/abc123#key=...</text>
-
-  <!-- Message bubbles hint -->
-  <rect x="672" y="390" width="200" height="24" rx="4" fill="#161b22"/>
-  <rect x="672" y="420" width="280" height="24" rx="4" fill="#1f6feb" opacity="0.2"/>
-  <rect x="672" y="450" width="160" height="24" rx="4" fill="#161b22"/>
-
-  <!-- Logo and text -->
-  <text x="80" y="260" fill="#0066ff" font-family="system-ui, sans-serif" font-size="48" font-weight="500">◈</text>
-  <text x="140" y="260" fill="#1a1a1a" font-family="system-ui, sans-serif" font-size="42" font-weight="600">claude</text>
-  <text x="318" y="260" fill="#0066ff" font-family="system-ui, sans-serif" font-size="42" font-weight="600">review</text>
-
-  <!-- Tagline -->
-  <text x="80" y="320" fill="#1a1a1a" font-family="system-ui, sans-serif" font-size="32" font-weight="600">Share how the code was built,</text>
-  <text x="80" y="365" fill="#1a1a1a" font-family="system-ui, sans-serif" font-size="32" font-weight="600">not just the final diff.</text>
-
-  <!-- Subtitle -->
-  <text x="80" y="420" fill="#666666" font-family="system-ui, sans-serif" font-size="20">Encrypted session sharing for Claude Code &amp; Codex</text>
-
-  <!-- URL -->
-  <text x="80" y="540" fill="#0066ff" font-family="monospace" font-size="18">claudereview.com</text>
-</svg>`;
-}
 
 // Admin middleware (for API only)
 const requireAdminApi = async (c: any, next: any) => {

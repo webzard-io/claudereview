@@ -1,7 +1,7 @@
 {
   "name": "claudereview",
-  "version": "0.1.1",
-  "description": "Share Claude Code sessions for code review with encryption",
+  "version": "0.1.2",
+  "description": "Share Claude Code and Codex CLI sessions for code review with encryption",
   "type": "module",
   "bin": {
     "ccshare": "./src/cli.ts"
@@ -21,6 +21,7 @@
   "keywords": [
     "claude",
     "claude-code",
+    "codex",
     "code-review",
     "session-sharing",
     "encryption"

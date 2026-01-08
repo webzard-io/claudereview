@@ -1,7 +1,7 @@
 {
   "name": "claudereview-mcp",
-  "version": "0.1.3",
-  "description": "MCP server for sharing Claude Code sessions",
+  "version": "0.1.4",
+  "description": "MCP server for sharing Claude Code and Codex CLI sessions",
   "type": "module",
   "bin": {
     "claudereview-mcp": "./server.ts"
@@ -9,6 +9,7 @@
   "keywords": [
     "claude",
     "claude-code",
+    "codex",
     "mcp",
     "model-context-protocol",
     "code-review"
