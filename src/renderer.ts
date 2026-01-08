@@ -145,9 +145,24 @@ function renderHeader(session: ParsedSession): string {
     .map(([name, count]) => `<button class="tool-badge tool-nav" data-tool="${escapeHtml(name)}">${escapeHtml(name)}<span class="tool-count">${count}</span></button>`)
     .join('');
 
-  // Token/cost estimate
-  const tokens = session.metadata.estimatedTokens || 0;
-  const costEstimate = tokens > 0 ? `~${Math.round(tokens / 1000)}K tokens` : '';
+  // Token/cost estimate - use actual tokens if available (Codex), otherwise estimated
+  let tokenDisplay = '';
+  if (session.metadata.actualInputTokens) {
+    const total = session.metadata.actualInputTokens + (session.metadata.actualOutputTokens || 0);
+    tokenDisplay = `${Math.round(total / 1000)}K tokens`;
+  } else if (session.metadata.estimatedTokens && session.metadata.estimatedTokens > 0) {
+    tokenDisplay = `~${Math.round(session.metadata.estimatedTokens / 1000)}K tokens`;
+  }
+
+  // Source badge (Claude Code or Codex)
+  const sourceBadge = session.source === 'codex'
+    ? '<span class="source-badge codex">Codex</span>'
+    : '<span class="source-badge claude">Claude</span>';
+
+  // Model badge for Codex
+  const modelBadge = session.metadata.model
+    ? `<span class="model-badge">${escapeHtml(session.metadata.model)}</span>`
+    : '';
 
   // Key moments summary
   const keyMoments = renderKeyMoments(session.metadata);
@@ -172,15 +187,20 @@ function renderHeader(session: ParsedSession): string {
           <span class="action-icon">+</span>
           <span class="action-label">Expand</span>
         </button>
+        <button id="copy-text-btn" class="action-btn labeled" title="Copy session as Markdown">
+          <span class="action-icon">📋</span>
+          <span class="action-label">Copy Text</span>
+        </button>
         <button id="copy-link-btn" class="action-btn labeled" title="Copy shareable link">
           <span class="action-icon">⎘</span>
-          <span class="action-label">Copy</span>
+          <span class="action-label">Copy Link</span>
         </button>
       </div>
     </div>
 
     <div class="session-info">
       <div class="title-row">
+        ${sourceBadge}
         <h1 class="session-title" id="session-title" contenteditable="true" spellcheck="false">${escapeHtml(truncate(session.title, 120))}</h1>
         <button id="edit-title-btn" class="edit-title-btn" title="Edit title">✎</button>
       </div>
@@ -194,7 +214,8 @@ function renderHeader(session: ParsedSession): string {
           <span class="meta-icon">⏱</span>
           ${formatDuration(session.metadata.durationSeconds)}
         </span>
-        ${costEstimate ? `<span class="meta-item token-count" title="Estimated tokens"><span class="meta-icon">⚡</span>${costEstimate}</span>` : ''}
+        ${tokenDisplay ? `<span class="meta-item token-count" title="${session.metadata.actualInputTokens ? 'Actual tokens' : 'Estimated tokens'}"><span class="meta-icon">⚡</span>${tokenDisplay}</span>` : ''}
+        ${modelBadge}
         <span class="meta-item session-id">
           ${session.id.slice(0, 8)}
         </span>
@@ -983,6 +1004,35 @@ body {
   font-family: var(--font-mono);
   background: var(--bg-tertiary);
   padding: 2px 6px;
+  border-radius: 3px;
+  color: var(--text-muted);
+}
+
+.source-badge {
+  font-size: var(--font-size-xs);
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-right: var(--space-2);
+}
+
+.source-badge.claude {
+  background: rgba(179, 139, 255, 0.15);
+  color: #b38bff;
+}
+
+.source-badge.codex {
+  background: rgba(78, 201, 112, 0.15);
+  color: #4ec970;
+}
+
+.model-badge {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  background: var(--bg-tertiary);
+  padding: 2px 8px;
   border-radius: 3px;
   color: var(--text-muted);
 }
@@ -1948,6 +1998,124 @@ const VIEWER_JS = `
     return div.innerHTML;
   }
 
+  // Format session as Markdown for clipboard
+  function formatSessionAsMarkdown(session) {
+    const lines = [];
+
+    // Header
+    lines.push('# ' + (session.title || 'Untitled Session'));
+    lines.push('');
+
+    // Session info
+    lines.push('## Session Info');
+    lines.push('');
+    lines.push('- **Source**: ' + (session.source === 'codex' ? 'Codex CLI' : 'Claude Code'));
+
+    const meta = session.metadata || {};
+    if (meta.messageCount) lines.push('- **Messages**: ' + meta.messageCount);
+    if (meta.durationSeconds) lines.push('- **Duration**: ' + formatDurationMd(meta.durationSeconds));
+    if (meta.toolCount) lines.push('- **Tools Used**: ' + meta.toolCount);
+
+    // Tokens
+    if (meta.actualInputTokens) {
+      const total = meta.actualInputTokens + (meta.actualOutputTokens || 0);
+      lines.push('- **Tokens**: ' + Math.round(total / 1000) + 'K');
+    } else if (meta.estimatedTokens) {
+      lines.push('- **Tokens**: ~' + Math.round(meta.estimatedTokens / 1000) + 'K (estimated)');
+    }
+
+    // Model
+    if (meta.model) lines.push('- **Model**: ' + meta.model);
+
+    // Git context
+    if (meta.gitRepo || meta.gitBranch) {
+      lines.push('');
+      lines.push('### Git Context');
+      if (meta.gitRepo) lines.push('- **Repo**: ' + meta.gitRepo);
+      if (meta.gitBranch) lines.push('- **Branch**: ' + meta.gitBranch);
+      if (meta.gitCommit) lines.push('- **Commit**: \`' + meta.gitCommit.slice(0, 7) + '\`');
+    }
+
+    // Tools summary
+    if (meta.tools && Object.keys(meta.tools).length > 0) {
+      lines.push('');
+      lines.push('### Tools Summary');
+      const sorted = Object.entries(meta.tools).sort((a, b) => b[1] - a[1]);
+      for (const [tool, count] of sorted) {
+        lines.push('- ' + tool + ': ' + count + 'x');
+      }
+    }
+
+    // Key moments
+    const files = (meta.filesCreated || []).concat(meta.filesModified || []);
+    const cmds = meta.commandsRun || [];
+    if (files.length || cmds.length) {
+      lines.push('');
+      lines.push('### Key Moments');
+      if (meta.filesCreated && meta.filesCreated.length) {
+        lines.push('');
+        lines.push('**Files Created:** ' + meta.filesCreated.slice(0, 5).map(f => '\`' + f.split('/').pop() + '\`').join(', '));
+      }
+      if (meta.filesModified && meta.filesModified.length) {
+        lines.push('');
+        lines.push('**Files Modified:** ' + meta.filesModified.slice(0, 5).map(f => '\`' + f.split('/').pop() + '\`').join(', '));
+      }
+      if (cmds.length) {
+        lines.push('');
+        lines.push('**Commands Run:** ' + cmds.slice(0, 3).map(c => '\`' + c + '\`').join(', '));
+      }
+    }
+
+    // Conversation
+    lines.push('');
+    lines.push('---');
+    lines.push('');
+    lines.push('## Conversation');
+    lines.push('');
+
+    const msgs = session.messages || [];
+    for (const msg of msgs) {
+      lines.push(formatMessageMd(msg));
+      lines.push('');
+    }
+
+    // Footer
+    lines.push('---');
+    lines.push('*Exported from [claudereview](https://claudereview.com) on ' + new Date().toISOString().split('T')[0] + '*');
+
+    return lines.join('\\n');
+  }
+
+  function formatMessageMd(msg) {
+    if (msg.type === 'human') {
+      return '### User\\n\\n' + msg.content;
+    }
+    if (msg.type === 'assistant') {
+      return '### Assistant\\n\\n' + msg.content;
+    }
+    if (msg.type === 'tool_call') {
+      const content = msg.toolInput && msg.toolName === 'Bash' && msg.toolInput.command
+        ? '$ ' + msg.toolInput.command
+        : (msg.content || msg.toolName);
+      return '**Tool: ' + (msg.toolName || 'Unknown') + '**\\n\\n\`\`\`\\n' + content + '\\n\`\`\`';
+    }
+    if (msg.type === 'tool_result') {
+      const output = msg.toolOutput || msg.content || '';
+      const truncated = output.length > 1500 ? output.slice(0, 1500) + '\\n... (truncated)' : output;
+      const errLabel = msg.isError ? ' (error)' : '';
+      return '<details>\\n<summary>Tool Output' + errLabel + '</summary>\\n\\n\`\`\`\\n' + truncated + '\\n\`\`\`\\n</details>';
+    }
+    return '';
+  }
+
+  function formatDurationMd(seconds) {
+    if (seconds < 60) return seconds + 's';
+    if (seconds < 3600) return Math.round(seconds / 60) + 'm';
+    const hours = Math.floor(seconds / 3600);
+    const mins = Math.round((seconds % 3600) / 60);
+    return hours + 'h ' + mins + 'm';
+  }
+
   function initViewer() {
     // Theme toggle
     document.getElementById('theme-toggle')?.addEventListener('click', () => {
@@ -2084,7 +2252,27 @@ const VIEWER_JS = `
       const label = btn?.querySelector('.action-label');
       if (label) {
         label.textContent = 'Copied!';
-        setTimeout(() => label.textContent = 'Copy', 1500);
+        setTimeout(() => label.textContent = 'Copy Link', 1500);
+      }
+    });
+
+    // Copy as Markdown text
+    document.getElementById('copy-text-btn')?.addEventListener('click', async () => {
+      const btn = document.getElementById('copy-text-btn');
+      const label = btn?.querySelector('.action-label');
+      try {
+        const markdown = formatSessionAsMarkdown(sessionData);
+        await navigator.clipboard.writeText(markdown);
+        if (label) {
+          label.textContent = 'Copied!';
+          setTimeout(() => label.textContent = 'Copy Text', 1500);
+        }
+      } catch (err) {
+        console.error('Failed to copy:', err);
+        if (label) {
+          label.textContent = 'Failed';
+          setTimeout(() => label.textContent = 'Copy Text', 1500);
+        }
       }
     });
 

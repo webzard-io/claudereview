@@ -1,6 +1,6 @@
 # claudereview-mcp
 
-MCP server for sharing Claude Code sessions via [claudereview.com](https://claudereview.com).
+MCP server for sharing Claude Code and Codex CLI sessions via [claudereview.com](https://claudereview.com).
 
 ## Installation
 
@@ -41,11 +41,13 @@ Without an API key, sessions are shared anonymously and won't appear in your das
 
 ### `list_sessions`
 
-List available Claude Code sessions.
+List available Claude Code and Codex CLI sessions.
 
 ```
 list_sessions(limit?: number)
 ```
+
+Returns sessions with source indicator (`[Claude]` or `[Codex]`).
 
 ### `share_session`
 
@@ -57,6 +59,16 @@ share_session(session_id: string, title?: string)
 
 Use `session_id: "last"` to share the most recent session.
 
+### `copy_session`
+
+Copy a session as formatted Markdown text.
+
+```
+copy_session(session_id: string)
+```
+
+Returns the session content as Markdown with stats, git context, tools summary, and full conversation. Use this when you want to paste session content somewhere rather than sharing a URL.
+
 ## Usage
 
 Once configured, just ask Claude:
@@ -64,6 +76,8 @@ Once configured, just ask Claude:
 - "Share this session"
 - "List my recent sessions"
 - "Share session abc123 with title 'Bug fix review'"
+- "Copy the last session as text"
+- "Give me the markdown for this session"
 
 ## Viewer Features
 

@@ -55,6 +55,7 @@ export function parseSessionContent(content: string, sessionId: string): ParsedS
     title,
     messages,
     metadata,
+    source: 'claude' as const,
   };
 }
 

@@ -546,7 +546,7 @@ _Submitted via claudereview.com feedback form_`;
         });
 
         if (res.ok) {
-          const data = await res.json();
+          const data = await res.json() as { html_url: string };
           issueUrl = data.html_url;
         } else {
           console.error('GitHub issue creation failed:', await res.text());
@@ -851,7 +851,7 @@ function generateOgImageSvg(): string {
   <text x="80" y="365" fill="#1a1a1a" font-family="system-ui, sans-serif" font-size="32" font-weight="600">not just the final diff.</text>
 
   <!-- Subtitle -->
-  <text x="80" y="420" fill="#666666" font-family="system-ui, sans-serif" font-size="20">Encrypted Claude Code session sharing</text>
+  <text x="80" y="420" fill="#666666" font-family="system-ui, sans-serif" font-size="20">Encrypted session sharing for Claude Code &amp; Codex</text>
 
   <!-- URL -->
   <text x="80" y="540" fill="#0066ff" font-family="monospace" font-size="18">claudereview.com</text>
@@ -1031,12 +1031,12 @@ app.get('/admin', async (c) => {
 function generateViewerHtml(session: Session | null, id: string): string {
   // For private sessions, use generic metadata to avoid leaking sensitive info
   const isPrivate = session?.visibility === 'private';
-  const title = isPrivate ? 'Protected Session' : (session?.title || 'Claude Code Session');
+  const title = isPrivate ? 'Protected Session' : (session?.title || 'Session');
   const description = isPrivate
     ? 'This session is password protected'
     : session
-    ? `${session.messageCount} messages · ${formatDuration(session.durationSeconds)}`
-    : 'View Claude Code session';
+    ? `${session.messageCount} messages · ${formatDuration(session.durationSeconds ?? 0)}`
+    : 'View session';
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -1137,9 +1137,9 @@ function generateLandingHtml(user: User | null): string {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>claudereview — Share Claude Code Sessions</title>
-  <meta name="description" content="Share your Claude Code sessions for code review. Encrypted, beautiful viewer. Drop a link in your PR.">
-  <meta property="og:title" content="claudereview — Share Claude Code Sessions">
+  <title>claudereview — Share Claude Code & Codex Sessions</title>
+  <meta name="description" content="Share your Claude Code and Codex sessions for code review. Encrypted, beautiful viewer. Drop a link in your PR.">
+  <meta property="og:title" content="claudereview — Share Claude Code & Codex Sessions">
   <meta property="og:description" content="Share how the code was built, not just the final diff. Encrypted.">
   <meta property="og:type" content="website">
   <meta property="og:image" content="https://claudereview.com/og-image.png">
@@ -1166,7 +1166,7 @@ function generateLandingHtml(user: User | null): string {
 
     <section class="hero">
       <div class="hero-badge">Open Source</div>
-      <h1>Share Claude Code sessions<br>for code review</h1>
+      <h1>Share Claude Code <span class="plus-codex">+ Codex</span> sessions<br>for code review</h1>
       <p class="hero-subtitle">
         Drop a link in your PR so reviewers can see how the code was built, not just the final diff. <a href="/privacy" class="privacy-link">Encrypted end-to-end</a>.
       </p>
@@ -1222,7 +1222,7 @@ function generateLandingHtml(user: User | null): string {
         <div class="feature-card">
           <div class="feature-icon">⚡</div>
           <h3>Instant sharing</h3>
-          <p>One command to share. Built with Bun for speed. Works with any Claude Code session.</p>
+          <p>One command to share. Built with Bun for speed. Works with any Claude Code or Codex session.</p>
         </div>
         <div class="feature-card">
           <div class="feature-icon">◈</div>
@@ -1255,7 +1255,7 @@ function generateLandingHtml(user: User | null): string {
     <section class="usage-section">
       <h2>Simple commands</h2>
       <p class="subtitle">Everything you need to share sessions</p>
-      <pre class="usage-code"><span class="comment"># List your recent sessions</span>
+      <pre class="usage-code"><span class="comment"># List your Claude Code and Codex sessions</span>
 <span class="cmd">ccshare list</span>
 
 <span class="comment"># Share a specific session by ID</span>
@@ -1263,6 +1263,9 @@ function generateLandingHtml(user: User | null): string {
 
 <span class="comment"># Share your last session</span>
 <span class="cmd">ccshare share --last</span>
+
+<span class="comment"># Copy session to clipboard as Markdown</span>
+<span class="cmd">ccshare copy --last</span>
 
 <span class="comment"># Password-protect a session</span>
 <span class="cmd">ccshare share --last --private "secret"</span>
@@ -1272,8 +1275,8 @@ function generateLandingHtml(user: User | null): string {
     </section>
 
     <section class="integration-section">
-      <h2>Claude Code integration</h2>
-      <p class="subtitle">Share sessions without leaving Claude</p>
+      <h2>Claude Code and Codex integration</h2>
+      <p class="subtitle">Share sessions without leaving your terminal</p>
 
       <div class="integration-grid">
         <div class="integration-card">
@@ -1291,9 +1294,9 @@ function generateLandingHtml(user: User | null): string {
         </div>
 
         <div class="integration-card">
-          <h3>Slash Command</h3>
+          <h3>Slash Command <span class="badge-small">Claude Code</span></h3>
           <p>Quick shortcut. Create <code>~/.claude/commands/share.md</code>:</p>
-          <pre class="integration-code">Share this Claude Code session.
+          <pre class="integration-code">Share this session.
 
 Run: bunx claudereview share --last
 
@@ -1309,7 +1312,7 @@ Return the URL to me.</pre>
         <a href="/privacy">Privacy</a>
         <a href="/dashboard">Dashboard</a>
       </div>
-      <p class="footer-note">Built for developers who use Claude Code</p>
+      <p class="footer-note">Built for developers who use Claude Code and Codex</p>
     </footer>
   </div>
 
@@ -1754,7 +1757,7 @@ URL: claudereview.com/s/abc123#key=xxxxx
         <a href="/privacy">Privacy</a>
         <a href="/dashboard">Dashboard</a>
       </div>
-      <p class="footer-note">Built for developers who use Claude Code</p>
+      <p class="footer-note">Built for developers who use Claude Code and Codex</p>
     </footer>
   </div>
 
@@ -1814,7 +1817,7 @@ function generateDashboardHtml(user: User): string {
 
     <main>
       <h1>My Sessions</h1>
-      <p class="subtitle">Manage your shared Claude Code sessions</p>
+      <p class="subtitle">Manage your shared sessions</p>
 
       <div id="sessions-list" class="sessions-list">
         <div class="loading">Loading sessions...</div>
@@ -1823,7 +1826,7 @@ function generateDashboardHtml(user: User): string {
       <div id="empty-state" class="empty-state hidden">
         <div class="empty-icon">📭</div>
         <h2>No sessions yet</h2>
-        <p>Share your first Claude Code session using the CLI or MCP server.</p>
+        <p>Share your first session using the CLI or MCP server.</p>
         <pre><code>ccshare share --last</code></pre>
       </div>
 
@@ -2571,13 +2574,13 @@ function generateAdminHtml(): string {
 
         const points = data.slice(-30);
         const maxCount = Math.max(...points.map(d => d.count), 1);
-        const width = 400, height = 120, padding = 10;
+        const width = 400, height = 120, padding = 20;
         const chartWidth = width - padding * 2;
         const chartHeight = height - padding * 2;
 
         // Calculate point coordinates
         const coords = points.map((d, i) => ({
-          x: padding + (i / Math.max(points.length - 1, 1)) * chartWidth,
+          x: padding + (points.length === 1 ? chartWidth / 2 : (i / (points.length - 1)) * chartWidth),
           y: padding + chartHeight - (d.count / maxCount) * chartHeight,
           count: d.count,
           date: d.date
@@ -2585,7 +2588,7 @@ function generateAdminHtml(): string {
 
         // Generate smooth curve using cardinal spline
         function cardinalSpline(pts, tension = 0.3) {
-          if (pts.length < 2) return '';
+          if (pts.length === 1) return 'M' + pts[0].x + ',' + pts[0].y;
           if (pts.length === 2) return 'M' + pts[0].x + ',' + pts[0].y + 'L' + pts[1].x + ',' + pts[1].y;
 
           let path = 'M' + pts[0].x + ',' + pts[0].y;
@@ -2606,14 +2609,23 @@ function generateAdminHtml(): string {
         }
 
         const linePath = cardinalSpline(coords);
-        const areaPath = linePath + 'L' + coords[coords.length-1].x + ',' + (height - padding) + 'L' + coords[0].x + ',' + (height - padding) + 'Z';
 
-        // Build SVG
+        // Build area path - handle single point case
+        let areaPath = '';
+        if (coords.length === 1) {
+          // Single point: draw a small rectangle
+          const x = coords[0].x, y = coords[0].y, bottom = height - padding;
+          areaPath = 'M' + (x-4) + ',' + bottom + 'L' + (x-4) + ',' + y + 'L' + (x+4) + ',' + y + 'L' + (x+4) + ',' + bottom + 'Z';
+        } else {
+          areaPath = linePath + 'L' + coords[coords.length-1].x + ',' + (height - padding) + 'L' + coords[0].x + ',' + (height - padding) + 'Z';
+        }
+
+        // Build SVG with visible dots
         const dots = coords.map(c =>
-          '<circle class="chart-dot" cx="' + c.x + '" cy="' + c.y + '" r="4" data-count="' + c.count + '" data-date="' + c.date + '"/>'
+          '<circle class="chart-dot" cx="' + c.x + '" cy="' + c.y + '" r="5" data-count="' + c.count + '" data-date="' + c.date + '" style="opacity:1"/>'
         ).join('');
 
-        container.innerHTML = '<svg viewBox="0 0 ' + width + ' ' + height + '" preserveAspectRatio="none">' +
+        container.innerHTML = '<svg viewBox="0 0 ' + width + ' ' + height + '" preserveAspectRatio="xMidYMid meet">' +
           '<path class="chart-area" d="' + areaPath + '"/>' +
           '<path class="chart-line" d="' + linePath + '"/>' +
           dots +
@@ -2867,7 +2879,7 @@ header {
 `;
 
 const LANDING_CSS = `
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,700;1,9..40,400&family=DM+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Caveat:wght@500&family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,700;1,9..40,400&family=DM+Mono:wght@400;500&display=swap');
 
 :root {
   --bg: #fafafa;
@@ -3056,6 +3068,16 @@ header.scrolled {
   line-height: 1.1;
   margin-bottom: 1.25rem;
   letter-spacing: -0.03em;
+}
+
+.plus-codex {
+  color: #22c55e;
+  font-family: 'Caveat', 'Segoe Script', 'Bradley Hand', cursive;
+  font-weight: 500;
+  font-size: 0.7em;
+  position: relative;
+  top: -0.15em;
+  margin-left: 0.1em;
 }
 
 .hero-subtitle {
@@ -3397,6 +3419,17 @@ header.scrolled {
   font-weight: 600;
   color: var(--text-bright);
   margin-bottom: 0.75rem;
+}
+
+.badge-small {
+  font-size: 0.65rem;
+  font-weight: 500;
+  background: var(--accent-soft);
+  color: var(--accent);
+  padding: 0.2em 0.5em;
+  border-radius: 4px;
+  margin-left: 0.5em;
+  vertical-align: middle;
 }
 
 .integration-card p {

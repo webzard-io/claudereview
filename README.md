@@ -1,6 +1,6 @@
 # claudereview
 
-Share Claude Code sessions for code review. Encrypted.
+Share Claude Code and Codex CLI sessions for code review. Encrypted.
 
 ## Installation
 
@@ -15,7 +15,7 @@ bunx claudereview
 ## Usage
 
 ```bash
-# List your Claude Code sessions
+# List your Claude Code and Codex sessions
 ccshare list
 
 # Share a specific session by ID
@@ -26,6 +26,12 @@ ccshare share --last
 
 # Share with password protection
 ccshare share --last --private "your-password"
+
+# Copy session to clipboard as Markdown
+ccshare copy --last
+
+# Copy to stdout instead
+ccshare copy --last --stdout
 
 # Preview the most recent session in browser
 ccshare preview --last
@@ -55,12 +61,19 @@ ccshare export --last -o session.html
 ### Export
 - **Self-Contained HTML**: Exported files work offline
 - **OG Meta Tags**: Rich previews when sharing links
+- **Clipboard Copy**: Copy as formatted Markdown for pasting anywhere
 
-## Claude Code Integration
+### Multi-CLI Support
+- **Claude Code**: Sessions from `~/.claude/projects/`
+- **Codex CLI**: Sessions from `~/.codex/sessions/`
+- **Auto-Detection**: Automatically detects and parses both formats
+- **Source Badges**: Shows `[Claude]` or `[Codex]` in session list
+
+## MCP Integration
 
 ### MCP Server
 
-Share sessions directly from Claude by adding to `~/.mcp.json`:
+Share sessions directly from Claude Code or Codex by adding to `~/.mcp.json`:
 
 ```json
 {
@@ -78,21 +91,23 @@ Share sessions directly from Claude by adding to `~/.mcp.json`:
 
 Get your API key from [claudereview.com/dashboard](https://claudereview.com/dashboard) after logging in with GitHub.
 
-Then just ask Claude: "Share this session" or "List my recent sessions".
+Then just ask: "Share this session", "List my recent sessions", or "Copy this session as text".
 
-### Slash Command
+### Slash Command (Claude Code)
 
 Add a quick slash command by creating `~/.claude/commands/share.md`:
 
 ```markdown
-Share this Claude Code session using claudereview.
+Share this session using claudereview.
 
 Run: bunx claudereview share --last
 
 Return the URL to me.
 ```
 
-Then type `/share` in any Claude Code session.
+Then type `/share` in any session.
+
+> **Note**: Codex CLI doesn't support slash commands. Use the MCP server instead.
 
 ## How It Works
 

@@ -38,6 +38,7 @@ export interface ParsedSession {
   title: string;
   messages: ParsedMessage[];
   metadata: SessionMetadata;
+  source: 'claude' | 'codex';
 }
 
 export interface SessionMetadata {
@@ -57,6 +58,15 @@ export interface SessionMetadata {
   gitRepo?: string;
   gitBranch?: string;
   gitCommit?: string;
+  // Codex-specific metadata
+  model?: string; // e.g., "gpt-5-codex"
+  effortLevel?: string; // e.g., "high"
+  cliVersion?: string; // e.g., "0.39.0"
+  originator?: string; // e.g., "codex_cli_rs"
+  // Actual token counts from Codex (vs estimated)
+  actualInputTokens?: number;
+  actualOutputTokens?: number;
+  actualCachedTokens?: number;
 }
 
 export interface ParsedMessage {
@@ -90,6 +100,7 @@ export interface LocalSession {
   projectPath: string;
   modifiedAt: Date;
   title?: string;
+  source: 'claude' | 'codex';
 }
 
 // Encrypted session for upload
@@ -139,4 +150,81 @@ export interface SessionResponse {
     durationSeconds: number;
     createdAt: string;
   };
+}
+
+// Codex raw JSONL types
+export interface CodexRawLine {
+  timestamp: string;
+  type: 'session_meta' | 'response_item' | 'event_msg' | 'turn_context';
+  payload: CodexPayload;
+}
+
+export type CodexPayload =
+  | CodexSessionMeta
+  | CodexResponseItem
+  | CodexEventMsg
+  | CodexTurnContext;
+
+export interface CodexSessionMeta {
+  id: string;
+  timestamp: string;
+  cwd: string;
+  originator: string;
+  cli_version: string;
+  instructions: string | null;
+  git?: {
+    commit_hash?: string;
+    branch?: string;
+    repository_url?: string;
+  };
+}
+
+export interface CodexResponseItem {
+  type: 'message' | 'function_call' | 'function_call_output' | 'reasoning';
+  role?: 'user' | 'assistant';
+  content?: Array<{ type: string; text?: string }>;
+  name?: string;
+  arguments?: string;
+  call_id?: string;
+  output?: string;
+  summary?: Array<{ type: string; text: string }>;
+  encrypted_content?: string;
+}
+
+export interface CodexEventMsg {
+  type: 'agent_reasoning' | 'token_count' | 'agent_message' | 'user_message';
+  text?: string;
+  message?: string;
+  kind?: string;
+  info?: {
+    total_token_usage: {
+      input_tokens: number;
+      output_tokens: number;
+      cached_input_tokens: number;
+      reasoning_output_tokens: number;
+      total_tokens: number;
+    };
+    last_token_usage?: {
+      input_tokens: number;
+      output_tokens: number;
+      cached_input_tokens: number;
+      reasoning_output_tokens: number;
+      total_tokens: number;
+    };
+    model_context_window?: number;
+  };
+}
+
+export interface CodexTurnContext {
+  cwd: string;
+  approval_policy: string;
+  sandbox_policy: {
+    mode: string;
+    network_access: boolean;
+    exclude_tmpdir_env_var: boolean;
+    exclude_slash_tmp: boolean;
+  };
+  model: string;
+  effort?: string;
+  summary?: string;
 }

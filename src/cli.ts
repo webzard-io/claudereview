@@ -6,6 +6,7 @@ import { homedir } from 'os';
 import { listSessions, getSession, getLastSession, parseSession, parseLastSession, parseSessionWithGit, formatDuration, formatRelativeTime, detectGitContext } from './session.ts';
 import { renderSessionToHtml } from './renderer.ts';
 import { encryptForPublic, encryptForPrivate } from './crypto.ts';
+import { formatSessionAsMarkdown, formatSessionAsPlainText } from './text-formatter.ts';
 
 const program = new Command();
 
@@ -83,18 +84,21 @@ program
         return;
       }
 
-      console.log(c('bold', '\n  Claude Code Sessions\n'));
+      console.log(c('bold', '\n  Sessions\n'));
 
       sessions.forEach((session, index) => {
         const num = c('dim', `${index + 1}.`.padStart(4));
         const id = c('cyan', session.id.slice(0, 8));
+        const source = session.source === 'codex'
+          ? c('green', '[Codex]')
+          : c('magenta', '[Claude]');
         const title = session.title
-          ? truncate(session.title, 50)
+          ? truncate(session.title, 45)
           : c('dim', 'Untitled');
         const time = c('dim', formatRelativeTime(session.modifiedAt));
         const project = c('dim', truncate(session.projectPath, 30));
 
-        console.log(`${num} ${id}  ${title}`);
+        console.log(`${num} ${id} ${source} ${title}`);
         console.log(`        ${project}  ${time}\n`);
       });
 
@@ -447,6 +451,72 @@ program
     console.log(c('green', '\n  ✓ Authenticated successfully!\n'));
     console.log(c('dim', `  Config saved to: ${CONFIG_FILE}`));
     console.log(c('dim', '  Your sessions will now be linked to your account.\n'));
+  });
+
+// Copy command - copy session as Markdown text
+program
+  .command('copy [session-id]')
+  .description('Copy a session to clipboard as Markdown')
+  .option('-l, --last', 'Copy the most recent session')
+  .option('-o, --output <path>', 'Write to file instead of clipboard')
+  .option('--stdout', 'Write to stdout instead of clipboard')
+  .option('--plain', 'Use plain text format instead of Markdown')
+  .action(async (sessionId, options) => {
+    try {
+      const session = await parseWithGitContext(sessionId, options.last);
+
+      console.log(c('dim', `Formatting: ${session.title}`));
+
+      // Format as text
+      const text = options.plain
+        ? formatSessionAsPlainText(session)
+        : formatSessionAsMarkdown(session);
+
+      if (options.output) {
+        // Write to file
+        await writeFile(options.output, text);
+        console.log(c('green', `✓ Written to ${options.output}`));
+        console.log(c('dim', `  ${text.length} characters`));
+      } else if (options.stdout) {
+        // Write to stdout
+        process.stdout.write(text);
+      } else {
+        // Copy to clipboard
+        const platform = process.platform;
+        let cmd: string;
+        let args: string[];
+
+        if (platform === 'darwin') {
+          cmd = 'pbcopy';
+          args = [];
+        } else if (platform === 'linux') {
+          cmd = 'xclip';
+          args = ['-selection', 'clipboard'];
+        } else if (platform === 'win32') {
+          cmd = 'clip';
+          args = [];
+        } else {
+          console.error(c('yellow', 'Clipboard not supported on this platform. Use --output or --stdout.'));
+          process.exit(1);
+        }
+
+        const proc = Bun.spawn([cmd, ...args], {
+          stdin: 'pipe',
+        });
+
+        proc.stdin.write(text);
+        proc.stdin.end();
+
+        await proc.exited;
+
+        console.log(c('green', '✓ Copied to clipboard'));
+        console.log(c('dim', `  ${session.metadata.messageCount} messages, ${formatDuration(session.metadata.durationSeconds)}`));
+        console.log(c('dim', `  ${text.length} characters (${options.plain ? 'plain text' : 'Markdown'})`));
+      }
+    } catch (error) {
+      console.error(c('yellow', `Error: ${error}`));
+      process.exit(1);
+    }
   });
 
 // Helper functions

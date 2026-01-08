@@ -5,15 +5,31 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import type { LocalSession, ParsedSession } from './types.ts';
 import { parseSessionFile, parseSessionContent } from './parser.ts';
+import { parseCodexSessionFile } from './codex-parser.ts';
 
 const execAsync = promisify(exec);
 
 const CLAUDE_PROJECTS_DIR = join(homedir(), '.claude', 'projects');
+const CODEX_SESSIONS_DIR = join(homedir(), '.codex', 'sessions');
 
 /**
- * List all available sessions across all projects
+ * List all available sessions across all projects (Claude Code and Codex)
  */
 export async function listSessions(): Promise<LocalSession[]> {
+  const claudeSessions = await listClaudeSessions();
+  const codexSessions = await listCodexSessions();
+
+  // Merge and sort by modification time
+  const allSessions = [...claudeSessions, ...codexSessions];
+  allSessions.sort((a, b) => b.modifiedAt.getTime() - a.modifiedAt.getTime());
+
+  return allSessions;
+}
+
+/**
+ * List Claude Code sessions from ~/.claude/projects/
+ */
+async function listClaudeSessions(): Promise<LocalSession[]> {
   const sessions: LocalSession[] = [];
 
   try {
@@ -56,16 +72,107 @@ export async function listSessions(): Promise<LocalSession[]> {
           projectPath: await decodeProjectPath(projectDir),
           modifiedAt: fileStat.mtime,
           title,
+          source: 'claude',
         });
       }
     }
 
-    // Sort by modified time, most recent first
-    sessions.sort((a, b) => b.modifiedAt.getTime() - a.modifiedAt.getTime());
+    return sessions;
+  } catch (error) {
+    console.error('Error listing Claude sessions:', error);
+    return [];
+  }
+}
+
+/**
+ * List Codex sessions from ~/.codex/sessions/YYYY/MM/DD/
+ */
+async function listCodexSessions(): Promise<LocalSession[]> {
+  const sessions: LocalSession[] = [];
+
+  try {
+    // Walk year directories
+    const years = await readdir(CODEX_SESSIONS_DIR);
+
+    for (const year of years) {
+      const yearPath = join(CODEX_SESSIONS_DIR, year);
+      let yearStat;
+      try {
+        yearStat = await stat(yearPath);
+      } catch {
+        continue;
+      }
+      if (!yearStat.isDirectory()) continue;
+
+      // Walk month directories
+      const months = await readdir(yearPath);
+      for (const month of months) {
+        const monthPath = join(yearPath, month);
+        let monthStat;
+        try {
+          monthStat = await stat(monthPath);
+        } catch {
+          continue;
+        }
+        if (!monthStat.isDirectory()) continue;
+
+        // Walk day directories
+        const days = await readdir(monthPath);
+        for (const day of days) {
+          const dayPath = join(monthPath, day);
+          let dayStat;
+          try {
+            dayStat = await stat(dayPath);
+          } catch {
+            continue;
+          }
+          if (!dayStat.isDirectory()) continue;
+
+          // Find session files
+          const files = await readdir(dayPath);
+          for (const file of files.filter(f => f.endsWith('.jsonl'))) {
+            const filePath = join(dayPath, file);
+            const fileStat = await stat(filePath);
+
+            // Extract session ID (UUID) from filename like rollout-YYYY-MM-DDTHH-MM-SS-{uuid}.jsonl
+            const idMatch = file.match(/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\.jsonl$/i);
+            const id = idMatch?.[1] ?? file.replace('.jsonl', '');
+
+            // Try to get project path (cwd) from session_meta
+            let projectPath = '';
+            let title: string | undefined;
+            try {
+              const content = await readFile(filePath, 'utf-8');
+              const firstLine = content.split('\n')[0];
+              if (firstLine) {
+                const parsed = JSON.parse(firstLine);
+                if (parsed.type === 'session_meta' && parsed.payload?.cwd) {
+                  projectPath = parsed.payload.cwd;
+                }
+              }
+            } catch {
+              // Ignore errors reading metadata
+            }
+
+            sessions.push({
+              id,
+              path: filePath,
+              projectPath,
+              modifiedAt: fileStat.mtime,
+              title,
+              source: 'codex',
+            });
+          }
+        }
+      }
+    }
 
     return sessions;
   } catch (error) {
-    console.error('Error listing sessions:', error);
+    // Codex directory may not exist
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      console.error('Error listing Codex sessions:', error);
+    }
     return [];
   }
 }
@@ -118,7 +225,7 @@ export async function getLastSession(): Promise<LocalSession | null> {
 }
 
 /**
- * Parse a session by ID
+ * Parse a session by ID (auto-detects Claude vs Codex)
  */
 export async function parseSession(sessionId: string): Promise<ParsedSession> {
   const session = await getSession(sessionId);
@@ -126,6 +233,9 @@ export async function parseSession(sessionId: string): Promise<ParsedSession> {
     throw new Error(`Session not found: ${sessionId}`);
   }
 
+  if (session.source === 'codex') {
+    return parseCodexSessionFile(session.path);
+  }
   return parseSessionFile(session.path);
 }
 
@@ -138,6 +248,9 @@ export async function parseLastSession(): Promise<ParsedSession> {
     throw new Error('No sessions found');
   }
 
+  if (session.source === 'codex') {
+    return parseCodexSessionFile(session.path);
+  }
   return parseSessionFile(session.path);
 }
 
@@ -279,16 +392,21 @@ export async function parseSessionWithGit(sessionId: string): Promise<ParsedSess
     throw new Error(`Session not found: ${sessionId}`);
   }
 
-  const parsed = await parseSessionFile(session.path);
+  const parsed = session.source === 'codex'
+    ? await parseCodexSessionFile(session.path)
+    : await parseSessionFile(session.path);
 
   // Try to detect git context from the project directory
-  const gitContext = await detectGitContext(session.projectPath);
+  // (Codex may already have git context from session_meta, but we'll override with fresh data)
+  if (session.projectPath) {
+    const gitContext = await detectGitContext(session.projectPath);
 
-  // Merge git context into metadata
-  parsed.metadata = {
-    ...parsed.metadata,
-    ...gitContext,
-  };
+    // Merge git context into metadata
+    parsed.metadata = {
+      ...parsed.metadata,
+      ...gitContext,
+    };
+  }
 
   return parsed;
 }

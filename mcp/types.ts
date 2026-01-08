@@ -5,6 +5,7 @@ export interface ParsedSession {
   title: string;
   messages: ParsedMessage[];
   metadata: SessionMetadata;
+  source?: 'claude' | 'codex';
 }
 
 export interface SessionMetadata {
@@ -21,6 +22,14 @@ export interface SessionMetadata {
   gitRepo?: string;
   gitBranch?: string;
   gitCommit?: string;
+  // Codex-specific fields
+  model?: string;
+  effortLevel?: string;
+  cliVersion?: string;
+  originator?: string;
+  actualInputTokens?: number;
+  actualOutputTokens?: number;
+  actualCachedTokens?: number;
 }
 
 export interface ParsedMessage {
