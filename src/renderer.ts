@@ -154,9 +154,11 @@ function renderHeader(session: ParsedSession): string {
     tokenDisplay = `~${Math.round(session.metadata.estimatedTokens / 1000)}K tokens`;
   }
 
-  // Source badge (Claude Code or Codex)
+  // Source badge (Claude Code, Codex, or Gemini)
   const sourceBadge = session.source === 'codex'
     ? '<span class="source-badge codex">Codex</span>'
+    : session.source === 'gemini'
+    ? '<span class="source-badge gemini">Gemini</span>'
     : '<span class="source-badge claude">Claude</span>';
 
   // Model badge for Codex
@@ -1026,6 +1028,11 @@ body {
 .source-badge.codex {
   background: rgba(78, 201, 112, 0.15);
   color: #4ec970;
+}
+
+.source-badge.gemini {
+  background: rgba(66, 133, 244, 0.15);
+  color: #4285f4;
 }
 
 .model-badge {
@@ -2009,7 +2016,7 @@ const VIEWER_JS = `
     // Session info
     lines.push('## Session Info');
     lines.push('');
-    lines.push('- **Source**: ' + (session.source === 'codex' ? 'Codex CLI' : 'Claude Code'));
+    lines.push('- **Source**: ' + (session.source === 'codex' ? 'Codex CLI' : session.source === 'gemini' ? 'Gemini CLI' : 'Claude Code'));
 
     const meta = session.metadata || {};
     if (meta.messageCount) lines.push('- **Messages**: ' + meta.messageCount);

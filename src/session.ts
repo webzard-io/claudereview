@@ -6,21 +6,24 @@ import { promisify } from 'util';
 import type { LocalSession, ParsedSession } from './types.ts';
 import { parseSessionFile, parseSessionContent } from './parser.ts';
 import { parseCodexSessionFile } from './codex-parser.ts';
+import { parseGeminiSessionFile, isGeminiFormat } from './gemini-parser.ts';
 
 const execAsync = promisify(exec);
 
 const CLAUDE_PROJECTS_DIR = join(homedir(), '.claude', 'projects');
 const CODEX_SESSIONS_DIR = join(homedir(), '.codex', 'sessions');
+const GEMINI_SESSIONS_DIR = join(homedir(), '.gemini', 'tmp');
 
 /**
- * List all available sessions across all projects (Claude Code and Codex)
+ * List all available sessions across all projects (Claude Code, Codex, and Gemini)
  */
 export async function listSessions(): Promise<LocalSession[]> {
   const claudeSessions = await listClaudeSessions();
   const codexSessions = await listCodexSessions();
+  const geminiSessions = await listGeminiSessions();
 
   // Merge and sort by modification time
-  const allSessions = [...claudeSessions, ...codexSessions];
+  const allSessions = [...claudeSessions, ...codexSessions, ...geminiSessions];
   allSessions.sort((a, b) => b.modifiedAt.getTime() - a.modifiedAt.getTime());
 
   return allSessions;
@@ -178,6 +181,86 @@ async function listCodexSessions(): Promise<LocalSession[]> {
 }
 
 /**
+ * List Gemini CLI sessions from ~/.gemini/tmp/<project_hash>/chats/
+ */
+async function listGeminiSessions(): Promise<LocalSession[]> {
+  const sessions: LocalSession[] = [];
+
+  try {
+    // Walk project hash directories
+    const projectHashes = await readdir(GEMINI_SESSIONS_DIR);
+
+    for (const projectHash of projectHashes) {
+      const projectPath = join(GEMINI_SESSIONS_DIR, projectHash);
+      let projectStat;
+      try {
+        projectStat = await stat(projectPath);
+      } catch {
+        continue;
+      }
+      if (!projectStat.isDirectory()) continue;
+
+      // Look for chats directory
+      const chatsDir = join(projectPath, 'chats');
+      try {
+        await stat(chatsDir);
+      } catch {
+        continue; // No chats directory
+      }
+
+      // Find session files (session-*.json or checkpoint-*.json)
+      const files = await readdir(chatsDir);
+      const sessionFiles = files.filter(f => f.endsWith('.json'));
+
+      for (const file of sessionFiles) {
+        const filePath = join(chatsDir, file);
+        const fileStat = await stat(filePath);
+
+        // Extract session ID from filename
+        const id = file.replace('.json', '').replace(/^(session-|checkpoint-)/, '');
+
+        // Try to validate it's a Gemini session and get title from first user message
+        let title: string | undefined;
+        let cwd = '';
+        try {
+          const content = await readFile(filePath, 'utf-8');
+          if (!isGeminiFormat(content)) continue; // Skip non-Gemini files
+
+          const parsed = JSON.parse(content);
+          const messages = parsed.messages || parsed.contents || [];
+          const firstUser = messages.find((m: { role: string }) => m.role === 'user');
+          if (firstUser?.parts?.[0]?.text) {
+            title = firstUser.parts[0].text.slice(0, 100);
+            if (firstUser.parts[0].text.length > 100) title += '...';
+          }
+          // Get cwd if available
+          if (parsed.cwd) cwd = parsed.cwd;
+        } catch {
+          // Ignore errors reading metadata
+        }
+
+        sessions.push({
+          id,
+          path: filePath,
+          projectPath: cwd || `gemini/${projectHash}`,
+          modifiedAt: fileStat.mtime,
+          title,
+          source: 'gemini',
+        });
+      }
+    }
+
+    return sessions;
+  } catch (error) {
+    // Gemini directory may not exist
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      console.error('Error listing Gemini sessions:', error);
+    }
+    return [];
+  }
+}
+
+/**
  * Find sessions for a specific project directory
  */
 export async function listSessionsForProject(projectDir: string): Promise<LocalSession[]> {
@@ -225,7 +308,7 @@ export async function getLastSession(): Promise<LocalSession | null> {
 }
 
 /**
- * Parse a session by ID (auto-detects Claude vs Codex)
+ * Parse a session by ID (auto-detects Claude vs Codex vs Gemini)
  */
 export async function parseSession(sessionId: string): Promise<ParsedSession> {
   const session = await getSession(sessionId);
@@ -235,6 +318,9 @@ export async function parseSession(sessionId: string): Promise<ParsedSession> {
 
   if (session.source === 'codex') {
     return parseCodexSessionFile(session.path);
+  }
+  if (session.source === 'gemini') {
+    return parseGeminiSessionFile(session.path);
   }
   return parseSessionFile(session.path);
 }
@@ -250,6 +336,9 @@ export async function parseLastSession(): Promise<ParsedSession> {
 
   if (session.source === 'codex') {
     return parseCodexSessionFile(session.path);
+  }
+  if (session.source === 'gemini') {
+    return parseGeminiSessionFile(session.path);
   }
   return parseSessionFile(session.path);
 }
@@ -392,9 +481,14 @@ export async function parseSessionWithGit(sessionId: string): Promise<ParsedSess
     throw new Error(`Session not found: ${sessionId}`);
   }
 
-  const parsed = session.source === 'codex'
-    ? await parseCodexSessionFile(session.path)
-    : await parseSessionFile(session.path);
+  let parsed: ParsedSession;
+  if (session.source === 'codex') {
+    parsed = await parseCodexSessionFile(session.path);
+  } else if (session.source === 'gemini') {
+    parsed = await parseGeminiSessionFile(session.path);
+  } else {
+    parsed = await parseSessionFile(session.path);
+  }
 
   // Try to detect git context from the project directory
   // (Codex may already have git context from session_meta, but we'll override with fresh data)

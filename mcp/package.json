@@ -1,7 +1,7 @@
 {
   "name": "claudereview-mcp",
-  "version": "0.1.4",
-  "description": "MCP server for sharing Claude Code and Codex CLI sessions",
+  "version": "0.1.5",
+  "description": "MCP server for sharing Claude Code, Codex, and Gemini CLI sessions",
   "type": "module",
   "bin": {
     "claudereview-mcp": "./server.ts"
@@ -10,6 +10,8 @@
     "claude",
     "claude-code",
     "codex",
+    "gemini",
+    "gemini-cli",
     "mcp",
     "model-context-protocol",
     "code-review"

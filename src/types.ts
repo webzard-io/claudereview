@@ -38,7 +38,7 @@ export interface ParsedSession {
   title: string;
   messages: ParsedMessage[];
   metadata: SessionMetadata;
-  source: 'claude' | 'codex';
+  source: 'claude' | 'codex' | 'gemini';
 }
 
 export interface SessionMetadata {
@@ -100,7 +100,7 @@ export interface LocalSession {
   projectPath: string;
   modifiedAt: Date;
   title?: string;
-  source: 'claude' | 'codex';
+  source: 'claude' | 'codex' | 'gemini';
 }
 
 // Encrypted session for upload
@@ -227,4 +227,46 @@ export interface CodexTurnContext {
   model: string;
   effort?: string;
   summary?: string;
+}
+
+// Gemini CLI raw JSON types
+export interface GeminiSession {
+  messages?: GeminiMessage[];
+  // Alternative: content array at top level
+  contents?: GeminiMessage[];
+  // Session metadata (may be at top level or nested)
+  sessionId?: string;
+  model?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface GeminiMessage {
+  role: 'user' | 'model';
+  parts: GeminiPart[];
+}
+
+export interface GeminiPart {
+  text?: string;
+  inlineData?: {
+    mimeType: string;
+    data: string; // base64
+  };
+  fileData?: {
+    mimeType: string;
+    fileUri: string;
+  };
+  functionCall?: {
+    name: string;
+    args: Record<string, unknown>;
+  };
+  functionResponse?: {
+    id?: string;
+    name: string;
+    response: {
+      output?: string;
+      error?: string;
+      [key: string]: unknown;
+    };
+  };
 }

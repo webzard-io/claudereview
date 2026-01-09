@@ -1,6 +1,6 @@
 # claudereview-mcp
 
-MCP server for sharing Claude Code and Codex CLI sessions via [claudereview.com](https://claudereview.com).
+MCP server for sharing Claude Code, Codex CLI, and Gemini CLI sessions via [claudereview.com](https://claudereview.com).
 
 ## Installation
 
@@ -41,13 +41,13 @@ Without an API key, sessions are shared anonymously and won't appear in your das
 
 ### `list_sessions`
 
-List available Claude Code and Codex CLI sessions.
+List available Claude Code, Codex CLI, and Gemini CLI sessions.
 
 ```
 list_sessions(limit?: number)
 ```
 
-Returns sessions with source indicator (`[Claude]` or `[Codex]`).
+Returns sessions with source indicator (`[Claude]`, `[Codex]`, or `[Gemini]`).
 
 ### `share_session`
 

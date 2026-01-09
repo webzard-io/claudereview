@@ -91,6 +91,8 @@ program
         const id = c('cyan', session.id.slice(0, 8));
         const source = session.source === 'codex'
           ? c('green', '[Codex]')
+          : session.source === 'gemini'
+          ? c('blue', '[Gemini]')
           : c('magenta', '[Claude]');
         const title = session.title
           ? truncate(session.title, 45)

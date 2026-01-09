@@ -13,7 +13,7 @@ export function formatSessionAsMarkdown(session: ParsedSession): string {
   // Metadata section
   lines.push('## Session Info');
   lines.push('');
-  lines.push(`- **Source**: ${session.source === 'codex' ? 'Codex CLI' : 'Claude Code'}`);
+  lines.push(`- **Source**: ${session.source === 'codex' ? 'Codex CLI' : session.source === 'gemini' ? 'Gemini CLI' : 'Claude Code'}`);
   lines.push(`- **Messages**: ${session.metadata.messageCount}`);
   lines.push(`- **Duration**: ${formatDuration(session.metadata.durationSeconds)}`);
   lines.push(`- **Tools Used**: ${session.metadata.toolCount}`);
@@ -230,7 +230,7 @@ export function formatSessionAsPlainText(session: ParsedSession): string {
 
   // Header
   lines.push(`SESSION: ${session.title}`);
-  lines.push(`Source: ${session.source === 'codex' ? 'Codex CLI' : 'Claude Code'}`);
+  lines.push(`Source: ${session.source === 'codex' ? 'Codex CLI' : session.source === 'gemini' ? 'Gemini CLI' : 'Claude Code'}`);
   lines.push(`Messages: ${session.metadata.messageCount} | Tools: ${session.metadata.toolCount} | Duration: ${formatDuration(session.metadata.durationSeconds)}`);
   lines.push('');
   lines.push('='.repeat(80));

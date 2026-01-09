@@ -1,6 +1,6 @@
 # claudereview
 
-Share Claude Code and Codex CLI sessions for code review. Encrypted.
+Share Claude Code, Codex CLI, and Gemini CLI sessions for code review. Encrypted.
 
 ## Installation
 
@@ -15,7 +15,7 @@ bunx claudereview
 ## Usage
 
 ```bash
-# List your Claude Code and Codex sessions
+# List your Claude Code, Codex, and Gemini sessions
 ccshare list
 
 # Share a specific session by ID
@@ -66,14 +66,15 @@ ccshare export --last -o session.html
 ### Multi-CLI Support
 - **Claude Code**: Sessions from `~/.claude/projects/`
 - **Codex CLI**: Sessions from `~/.codex/sessions/`
-- **Auto-Detection**: Automatically detects and parses both formats
-- **Source Badges**: Shows `[Claude]` or `[Codex]` in session list
+- **Gemini CLI**: Sessions from `~/.gemini/tmp/*/chats/`
+- **Auto-Detection**: Automatically detects and parses all formats
+- **Source Badges**: Shows `[Claude]`, `[Codex]`, or `[Gemini]` in session list
 
 ## MCP Integration
 
 ### MCP Server
 
-Share sessions directly from Claude Code or Codex by adding to `~/.mcp.json`:
+Share sessions directly from Claude Code, Codex, or Gemini CLI by adding to `~/.mcp.json`:
 
 ```json
 {
@@ -107,7 +108,7 @@ Return the URL to me.
 
 Then type `/share` in any session.
 
-> **Note**: Codex CLI doesn't support slash commands. Use the MCP server instead.
+> **Note**: Codex CLI and Gemini CLI don't support slash commands. Use the MCP server instead.
 
 ## How It Works
 

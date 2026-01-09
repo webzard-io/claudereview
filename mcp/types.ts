@@ -5,7 +5,7 @@ export interface ParsedSession {
   title: string;
   messages: ParsedMessage[];
   metadata: SessionMetadata;
-  source?: 'claude' | 'codex';
+  source?: 'claude' | 'codex' | 'gemini';
 }
 
 export interface SessionMetadata {

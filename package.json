@@ -1,7 +1,7 @@
 {
   "name": "claudereview",
-  "version": "0.1.2",
-  "description": "Share Claude Code and Codex CLI sessions for code review with encryption",
+  "version": "0.1.3",
+  "description": "Share Claude Code, Codex, and Gemini CLI sessions for code review with encryption",
   "type": "module",
   "bin": {
     "ccshare": "./src/cli.ts"
@@ -22,6 +22,8 @@
     "claude",
     "claude-code",
     "codex",
+    "gemini",
+    "gemini-cli",
     "code-review",
     "session-sharing",
     "encryption"

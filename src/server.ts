@@ -1057,9 +1057,9 @@ function generateLandingHtml(user: User | null): string {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>claudereview — Share Claude Code & Codex Sessions</title>
-  <meta name="description" content="Share your Claude Code and Codex sessions for code review. Encrypted, beautiful viewer. Drop a link in your PR.">
-  <meta property="og:title" content="claudereview — Share Claude Code & Codex Sessions">
+  <title>claudereview — Share Claude Code, Codex & Gemini Sessions</title>
+  <meta name="description" content="Share your Claude Code, Codex, and Gemini CLI sessions for code review. Encrypted, beautiful viewer. Drop a link in your PR.">
+  <meta property="og:title" content="claudereview — Share Claude Code, Codex & Gemini Sessions">
   <meta property="og:description" content="Share how the code was built, not just the final diff. Encrypted.">
   <meta property="og:type" content="website">
   <meta property="og:image" content="https://claudereview.com/og-image.png">
@@ -1086,7 +1086,7 @@ function generateLandingHtml(user: User | null): string {
 
     <section class="hero">
       <div class="hero-badge">Open Source</div>
-      <h1>Share Claude Code <span class="plus-codex">+ Codex</span> sessions<br>for code review</h1>
+      <h1>Share Claude Code <span class="plus-codex">+ Codex</span> <span class="plus-gemini">+ Gemini</span> sessions<br>for code review</h1>
       <p class="hero-subtitle">
         Drop a link in your PR so reviewers can see how the code was built, not just the final diff. <a href="/privacy" class="privacy-link">Encrypted end-to-end</a>.
       </p>
@@ -1142,7 +1142,7 @@ function generateLandingHtml(user: User | null): string {
         <div class="feature-card">
           <div class="feature-icon">⚡</div>
           <h3>Instant sharing</h3>
-          <p>One command to share. Built with Bun for speed. Works with any Claude Code or Codex session.</p>
+          <p>One command to share. Built with Bun for speed. Works with Claude Code, Codex, and Gemini CLI.</p>
         </div>
         <div class="feature-card">
           <div class="feature-icon">◈</div>
@@ -1175,7 +1175,7 @@ function generateLandingHtml(user: User | null): string {
     <section class="usage-section">
       <h2>Simple commands</h2>
       <p class="subtitle">Everything you need to share sessions</p>
-      <pre class="usage-code"><span class="comment"># List your Claude Code and Codex sessions</span>
+      <pre class="usage-code"><span class="comment"># List your Claude Code, Codex, and Gemini sessions</span>
 <span class="cmd">ccshare list</span>
 
 <span class="comment"># Share a specific session by ID</span>
@@ -1195,7 +1195,7 @@ function generateLandingHtml(user: User | null): string {
     </section>
 
     <section class="integration-section">
-      <h2>Claude Code and Codex integration</h2>
+      <h2>MCP Integration</h2>
       <p class="subtitle">Share sessions without leaving your terminal</p>
 
       <div class="integration-grid">
@@ -1232,7 +1232,7 @@ Return the URL to me.</pre>
         <a href="/privacy">Privacy</a>
         <a href="/dashboard">Dashboard</a>
       </div>
-      <p class="footer-note">Built for developers who use Claude Code and Codex</p>
+      <p class="footer-note">Built for developers who use Claude Code, Codex, and Gemini CLI</p>
     </footer>
   </div>
 
@@ -1677,7 +1677,7 @@ URL: claudereview.com/s/abc123#key=xxxxx
         <a href="/privacy">Privacy</a>
         <a href="/dashboard">Dashboard</a>
       </div>
-      <p class="footer-note">Built for developers who use Claude Code and Codex</p>
+      <p class="footer-note">Built for developers who use Claude Code, Codex, and Gemini CLI</p>
     </footer>
   </div>
 
@@ -2992,6 +2992,19 @@ header.scrolled {
 
 .plus-codex {
   color: #22c55e;
+  font-family: 'Caveat', 'Segoe Script', 'Bradley Hand', cursive;
+  font-weight: 500;
+  font-size: 0.7em;
+  position: relative;
+  top: -0.15em;
+  margin-left: 0.1em;
+}
+
+.plus-gemini {
+  background: linear-gradient(90deg, #4285F4, #EA4335, #FBBC05, #34A853);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
   font-family: 'Caveat', 'Segoe Script', 'Bradley Hand', cursive;
   font-weight: 500;
   font-size: 0.7em;

@@ -2,12 +2,12 @@
 /**
  * claudereview MCP Server
  *
- * Exposes tools for sharing Claude Code sessions via the Model Context Protocol.
+ * Exposes tools for sharing Claude Code, Codex, and Gemini CLI sessions via the Model Context Protocol.
  *
  * Tools:
- * - list_sessions: List available Claude Code sessions
+ * - list_sessions: List available sessions from all supported CLIs
  * - share_session: Share a session and get a URL
- * - preview_session: Generate a local HTML preview
+ * - copy_session: Copy session as Markdown text
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -24,6 +24,7 @@ import type { ParsedSession, ParsedMessage, SessionMetadata } from './types.ts';
 
 const CLAUDE_PROJECTS_DIR = join(homedir(), '.claude', 'projects');
 const CODEX_SESSIONS_DIR = join(homedir(), '.codex', 'sessions');
+const GEMINI_SESSIONS_DIR = join(homedir(), '.gemini', 'tmp');
 const API_URL = process.env.CCSHARE_API_URL || process.env.CLAUDEREVIEW_API_URL || 'https://claudereview.com';
 const API_KEY = process.env.CCSHARE_API_KEY;
 
@@ -34,13 +35,14 @@ interface LocalSession {
   projectPath: string;
   modifiedAt: Date;
   title?: string;
-  source: 'claude' | 'codex';
+  source: 'claude' | 'codex' | 'gemini';
 }
 
 async function listSessions(limit = 10): Promise<LocalSession[]> {
   const claudeSessions = await listClaudeSessions();
   const codexSessions = await listCodexSessions();
-  const allSessions = [...claudeSessions, ...codexSessions];
+  const geminiSessions = await listGeminiSessions();
+  const allSessions = [...claudeSessions, ...codexSessions, ...geminiSessions];
   allSessions.sort((a, b) => b.modifiedAt.getTime() - a.modifiedAt.getTime());
   return allSessions.slice(0, limit);
 }
@@ -159,7 +161,63 @@ async function listCodexSessions(): Promise<LocalSession[]> {
   }
 }
 
-async function getSessionContent(sessionId: string): Promise<{ content: string; source: 'claude' | 'codex' } | null> {
+async function listGeminiSessions(): Promise<LocalSession[]> {
+  const sessions: LocalSession[] = [];
+
+  try {
+    const projectHashes = await readdir(GEMINI_SESSIONS_DIR);
+
+    for (const projectHash of projectHashes) {
+      const projectPath = join(GEMINI_SESSIONS_DIR, projectHash);
+      let projectStat;
+      try { projectStat = await stat(projectPath); } catch { continue; }
+      if (!projectStat.isDirectory()) continue;
+
+      const chatsDir = join(projectPath, 'chats');
+      try { await stat(chatsDir); } catch { continue; }
+
+      const files = await readdir(chatsDir);
+      const sessionFiles = files.filter(f => f.endsWith('.json'));
+
+      for (const file of sessionFiles) {
+        const filePath = join(chatsDir, file);
+        const fileStat = await stat(filePath);
+        const id = file.replace('.json', '').replace(/^(session-|checkpoint-)/, '');
+
+        let title: string | undefined;
+        let cwd = '';
+        try {
+          const content = await readFile(filePath, 'utf-8');
+          if (!isGeminiFormat(content)) continue;
+
+          const parsed = JSON.parse(content);
+          const messages = parsed.messages || parsed.contents || [];
+          const firstUser = messages.find((m: { role: string }) => m.role === 'user');
+          if (firstUser?.parts?.[0]?.text) {
+            title = firstUser.parts[0].text.slice(0, 100);
+            if (firstUser.parts[0].text.length > 100) title += '...';
+          }
+          if (parsed.cwd) cwd = parsed.cwd;
+        } catch {}
+
+        sessions.push({
+          id,
+          path: filePath,
+          projectPath: cwd || `gemini/${projectHash}`,
+          modifiedAt: fileStat.mtime,
+          title,
+          source: 'gemini',
+        });
+      }
+    }
+
+    return sessions;
+  } catch {
+    return [];
+  }
+}
+
+async function getSessionContent(sessionId: string): Promise<{ content: string; source: 'claude' | 'codex' | 'gemini' } | null> {
   const sessions = await listSessions(100);
   const session = sessions.find(s => s.id === sessionId || s.id.startsWith(sessionId));
   if (!session) return null;
@@ -178,9 +236,24 @@ function isCodexFormat(content: string): boolean {
   }
 }
 
-function parseSessionContent(content: string, sessionId: string, source: 'claude' | 'codex', customTitle?: string): ParsedSession {
+function isGeminiFormat(content: string): boolean {
+  try {
+    const parsed = JSON.parse(content);
+    const messages = parsed.messages || parsed.contents;
+    if (!Array.isArray(messages) || messages.length === 0) return false;
+    const first = messages[0];
+    return (first.role === 'user' || first.role === 'model') && Array.isArray(first.parts);
+  } catch {
+    return false;
+  }
+}
+
+function parseSessionContent(content: string, sessionId: string, source: 'claude' | 'codex' | 'gemini', customTitle?: string): ParsedSession {
   if (source === 'codex') {
     return parseCodexContent(content, sessionId, customTitle);
+  }
+  if (source === 'gemini') {
+    return parseGeminiContent(content, sessionId, customTitle);
   }
   return parseClaudeContent(content, sessionId, customTitle);
 }
@@ -480,6 +553,175 @@ function parseCodexContent(content: string, sessionId: string, customTitle?: str
   };
 }
 
+interface GeminiPart {
+  text?: string;
+  functionCall?: { name: string; args: Record<string, unknown> };
+  functionResponse?: { id?: string; name: string; response: Record<string, unknown> };
+}
+
+function parseGeminiContent(content: string, sessionId: string, customTitle?: string): ParsedSession {
+  const session = JSON.parse(content);
+  const messages: ParsedMessage[] = [];
+  let title = customTitle || 'Untitled Gemini Session';
+  const toolCounts: Record<string, number> = {};
+  let messageIndex = 0;
+
+  const filesCreated = new Set<string>();
+  const filesModified = new Set<string>();
+  const commandsRun: string[] = [];
+  let totalChars = 0;
+
+  const rawMessages = session.messages || session.contents || [];
+
+  for (const msg of rawMessages) {
+    if (msg.role === 'user') {
+      const funcResponses = msg.parts?.filter((p: GeminiPart) => p.functionResponse) || [];
+      if (funcResponses.length > 0) {
+        for (const part of funcResponses) {
+          if (part.functionResponse) {
+            const funcName = part.functionResponse.name;
+            const toolName = mapGeminiToolName(funcName);
+            const output = extractGeminiFunctionOutput(part.functionResponse.response);
+            const isError = !!part.functionResponse.response?.error;
+            const toolId = part.functionResponse.id || `${funcName}-${messageIndex}`;
+
+            totalChars += output.length;
+            messages.push({
+              id: `msg-${messageIndex++}`,
+              type: 'tool_result',
+              content: output,
+              timestamp: session.updatedAt || new Date().toISOString(),
+              toolId,
+              toolOutput: output,
+              isError,
+            });
+          }
+        }
+      } else {
+        const userText = msg.parts?.filter((p: GeminiPart) => p.text).map((p: GeminiPart) => p.text).join('\n') || '';
+        if (userText.trim()) {
+          totalChars += userText.length;
+          messages.push({
+            id: `msg-${messageIndex++}`,
+            type: 'human',
+            content: userText.trim(),
+            timestamp: session.updatedAt || new Date().toISOString(),
+          });
+        }
+      }
+    } else if (msg.role === 'model') {
+      const textParts = msg.parts?.filter((p: GeminiPart) => p.text) || [];
+      const funcCallParts = msg.parts?.filter((p: GeminiPart) => p.functionCall) || [];
+
+      if (textParts.length > 0) {
+        const assistantText = textParts.map((p: GeminiPart) => p.text).join('\n');
+        if (assistantText.trim()) {
+          totalChars += assistantText.length;
+          messages.push({
+            id: `msg-${messageIndex++}`,
+            type: 'assistant',
+            content: assistantText.trim(),
+            timestamp: session.updatedAt || new Date().toISOString(),
+          });
+        }
+      }
+
+      for (const part of funcCallParts) {
+        if (part.functionCall) {
+          const toolName = mapGeminiToolName(part.functionCall.name);
+          const toolInput = part.functionCall.args;
+          const toolId = `${part.functionCall.name}-${messageIndex}`;
+
+          toolCounts[toolName] = (toolCounts[toolName] || 0) + 1;
+
+          if (toolName === 'Bash') {
+            const cmd = String(toolInput?.command || toolInput?.cmd || '');
+            if (cmd && !cmd.match(/^(cd|ls|pwd|echo|cat|head|tail)\b/) && cmd.length < 100) {
+              commandsRun.push(cmd);
+            }
+          }
+          if (toolName === 'Write') {
+            const path = String(toolInput?.file_path || toolInput?.path || '');
+            if (path) filesCreated.add(path);
+          }
+          if (toolName === 'Edit') {
+            const path = String(toolInput?.file_path || toolInput?.path || '');
+            if (path) filesModified.add(path);
+          }
+
+          totalChars += JSON.stringify(toolInput).length;
+          messages.push({
+            id: `msg-${messageIndex++}`,
+            type: 'tool_call',
+            content: formatToolCall(toolName, toolInput),
+            timestamp: session.updatedAt || new Date().toISOString(),
+            toolName,
+            toolInput,
+            toolId,
+          });
+        }
+      }
+    }
+  }
+
+  if (title === 'Untitled Gemini Session') {
+    const firstHuman = messages.find(m => m.type === 'human');
+    if (firstHuman) {
+      title = firstHuman.content.slice(0, 100) + (firstHuman.content.length > 100 ? '...' : '');
+    }
+  }
+
+  const now = new Date().toISOString();
+  return {
+    id: sessionId,
+    title,
+    messages,
+    metadata: {
+      messageCount: messages.filter(m => m.type === 'human' || m.type === 'assistant').length,
+      toolCount: Object.values(toolCounts).reduce((a, b) => a + b, 0),
+      durationSeconds: 0,
+      startTime: session.createdAt || now,
+      endTime: session.updatedAt || now,
+      tools: toolCounts,
+      filesCreated: [...filesCreated].slice(0, 20),
+      filesModified: [...filesModified].slice(0, 20),
+      commandsRun: commandsRun.slice(0, 15),
+      estimatedTokens: Math.round(totalChars / 4),
+      model: session.model,
+    },
+    source: 'gemini',
+  };
+}
+
+function mapGeminiToolName(geminiName: string): string {
+  const mapping: Record<string, string> = {
+    'shell': 'Bash',
+    'Bash': 'Bash',
+    'run_shell_command': 'Bash',
+    'execute_command': 'Bash',
+    'read_file': 'Read',
+    'ReadFile': 'Read',
+    'write_file': 'Write',
+    'WriteFile': 'Write',
+    'edit_file': 'Edit',
+    'EditFile': 'Edit',
+    'search_file_content': 'Grep',
+    'search_files': 'Grep',
+    'list_files': 'LS',
+    'list_directory': 'LS',
+    'glob': 'Glob',
+    'find_files': 'Glob',
+  };
+  return mapping[geminiName] || geminiName;
+}
+
+function extractGeminiFunctionOutput(response: Record<string, unknown>): string {
+  if (response.output && typeof response.output === 'string') return response.output;
+  if (response.error && typeof response.error === 'string') return `Error: ${response.error}`;
+  if (response.result && typeof response.result === 'string') return response.result;
+  return JSON.stringify(response, null, 2);
+}
+
 function mapCodexToolName(codexName: string): string {
   const mapping: Record<string, string> = {
     'shell': 'Bash',
@@ -525,7 +767,7 @@ function formatSessionAsMarkdown(session: ParsedSession): string {
   lines.push('');
   lines.push('## Session Info');
   lines.push('');
-  lines.push(`- **Source**: ${session.source === 'codex' ? 'Codex CLI' : 'Claude Code'}`);
+  lines.push(`- **Source**: ${session.source === 'codex' ? 'Codex CLI' : session.source === 'gemini' ? 'Gemini CLI' : 'Claude Code'}`);
   lines.push(`- **Messages**: ${session.metadata.messageCount}`);
   lines.push(`- **Duration**: ${formatDuration(session.metadata.durationSeconds)}`);
   lines.push(`- **Tools Used**: ${session.metadata.toolCount}`);
@@ -719,14 +961,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
       name: 'list_sessions',
-      description: `List available Claude Code sessions from ~/.claude/projects.
+      description: `List available Claude Code, Codex, and Gemini CLI sessions.
 
 Returns the most recent sessions with:
 - Session ID (use for sharing)
 - Title (from session summary)
 - Project path
 - Last modified time
-- Source (Claude Code or Codex)
+- Source (Claude Code, Codex, or Gemini)
 
 Example: list_sessions(limit: 5)`,
       inputSchema: {
@@ -741,7 +983,7 @@ Example: list_sessions(limit: 5)`,
     },
     {
       name: 'share_session',
-      description: `Share a Claude Code session to claudereview.com with full-featured viewer.
+      description: `Share a Claude Code, Codex, or Gemini session to claudereview.com with full-featured viewer.
 
 Creates an E2E encrypted link with:
 - TUI-style dark/light theme viewer
@@ -813,7 +1055,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const sessions = await listSessions(limit);
 
     const formatted = sessions.map((s, i) => {
-      const sourceLabel = s.source === 'codex' ? '[Codex]' : '[Claude]';
+      const sourceLabel = s.source === 'codex' ? '[Codex]' : s.source === 'gemini' ? '[Gemini]' : '[Claude]';
       return `${i + 1}. ${sourceLabel} [${s.id.slice(0, 8)}] ${s.title || 'Untitled'}\n   Project: ${s.projectPath}\n   Modified: ${s.modifiedAt.toLocaleString()}`;
     }).join('\n\n');
 
