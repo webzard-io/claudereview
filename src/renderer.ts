@@ -1085,7 +1085,7 @@ body {
 .session-container {
   flex: 1;
   padding: var(--space-5);
-  max-width: 900px;
+  max-width: calc(100vw - 48px);
   margin: 0 auto;
   width: 100%;
 }
@@ -1265,6 +1265,11 @@ body {
   align-items: baseline;
   gap: var(--space-2);
   padding: var(--space-2) 0;
+}
+
+.tool-call:has(.edit-diff) {
+  flex-direction: column;
+  align-items: stretch;
 }
 
 .tool-icon {
