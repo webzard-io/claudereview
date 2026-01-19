@@ -200,8 +200,46 @@ function base64UrlDecode(str) {
 }
 
 // Main decryption function called by viewer
-async function decryptSession(encryptedBlob, iv, keyOrPassword, salt) {
+async function decryptSession(encryptedBlob, iv, keyOrPassword, salt, options) {
   try {
+    const canUseWebCrypto = typeof crypto !== 'undefined' && crypto.subtle && window.isSecureContext;
+    if (!canUseWebCrypto) {
+      const sessionId = options && options.sessionId;
+      const baseUrl = options && options.baseUrl
+        ? options.baseUrl
+        : (window.location.origin === 'null' ? '' : window.location.origin);
+
+      if (!sessionId || !baseUrl) {
+        throw new Error('Web Crypto API unavailable and server fallback is not configured.');
+      }
+
+      const response = await fetch(baseUrl + '/api/session/' + sessionId + '/decrypt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keyOrPassword }),
+      });
+
+      let responseData;
+      try {
+        responseData = await response.json();
+      } catch {
+        responseData = null;
+      }
+
+      if (!response.ok) {
+        const errorMessage = responseData && responseData.error
+          ? responseData.error
+          : 'Failed to decrypt session.';
+        throw new Error(errorMessage);
+      }
+
+      if (!responseData || !responseData.session) {
+        throw new Error('Invalid server response.');
+      }
+
+      return responseData.session;
+    }
+
     let key;
     if (salt) {
       // Private session - derive key from password
