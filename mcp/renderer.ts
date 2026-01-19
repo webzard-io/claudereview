@@ -3,6 +3,7 @@ import { diffLines } from './diff.ts';
 
 // MCP only renders non-encrypted HTML (encryption happens after)
 const BROWSER_CRYPTO_CODE = '';
+const SITE_NAME = process.env.SITE_NAME || 'claudereview';
 
 /**
  * Render a parsed session to self-contained HTML
@@ -132,7 +133,7 @@ function renderOgTags(session: ParsedSession): string {
   <meta property="og:type" content="website">
   <meta property="og:title" content="${escapeHtml(truncate(session.title, 60))}">
   <meta property="og:description" content="${escapeHtml(description)}">
-  <meta property="og:site_name" content="claudereview">
+  <meta property="og:site_name" content="${SITE_NAME}">
   <meta name="twitter:card" content="summary">
   <meta name="twitter:title" content="${escapeHtml(truncate(session.title, 60))}">
   <meta name="twitter:description" content="${escapeHtml(description)}">

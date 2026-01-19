@@ -5,9 +5,9 @@ MCP server for sharing Claude Code, Codex CLI, and Gemini CLI sessions via [clau
 ## Installation
 
 ```bash
-npm install -g claudereview-mcp
+npm install -g smartx-claudereview-mcp
 # or
-bun add -g claudereview-mcp
+bun add -g smartx-claudereview-mcp
 ```
 
 Then add to `~/.mcp.json`:
@@ -17,7 +17,7 @@ Then add to `~/.mcp.json`:
   "mcpServers": {
     "claudereview": {
       "command": "bunx",
-      "args": ["claudereview-mcp"],
+      "args": ["smartx-claudereview-mcp"],
       "env": {
         "CCSHARE_API_KEY": "your-api-key-here"
       }

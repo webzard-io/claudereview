@@ -1,6 +1,7 @@
 import type { ParsedSession, ParsedMessage, SessionMetadata } from './types.ts';
 import { diffLines } from './diff.ts';
 import { BROWSER_CRYPTO_CODE } from './crypto.ts';
+import { DEFAULT_API_URL, DEFAULT_SITE_NAME } from './constants.ts';
 
 /**
  * Render a parsed session to self-contained HTML
@@ -13,11 +14,12 @@ export function renderSessionToHtml(session: ParsedSession, options?: RenderOpti
     salt,
     theme = 'dark',
     embed = false,
+    baseUrl = DEFAULT_API_URL,
   } = options || {};
 
   const sessionDataForViewer = encrypted
-    ? { encrypted: true, encryptedBlob, iv, salt, metadata: session.metadata, title: session.title, id: session.id }
-    : session;
+    ? { encrypted: true, encryptedBlob, iv, salt, metadata: session.metadata, title: session.title, id: session.id, baseUrl }
+    : { ...session, baseUrl };
 
   return `<!DOCTYPE html>
 <html lang="en" data-theme="${theme}"${embed ? ' data-embed="true"' : ''}>
@@ -78,7 +80,7 @@ export function renderSessionToHtml(session: ParsedSession, options?: RenderOpti
 
     <!-- Main viewer -->
     <div id="viewer" class="${encrypted && salt ? 'hidden' : ''}">
-      ${renderHeader(session)}
+      ${renderHeader(session, baseUrl)}
 
       <div class="session-container">
         <main id="messages" class="messages">
@@ -94,7 +96,7 @@ export function renderSessionToHtml(session: ParsedSession, options?: RenderOpti
           <span class="sep">·</span>
           <kbd>C</kbd> collapse all
         </div>
-        <a href="https://claudereview.com" class="footer-brand" target="_blank">
+        <a href="${baseUrl}" class="footer-brand" target="_blank">
           <span class="brand-icon">◈</span> claudereview
         </a>
       </footer>
@@ -115,6 +117,7 @@ interface RenderOptions {
   salt?: string;
   theme?: 'dark' | 'light';
   embed?: boolean;
+  baseUrl?: string;
 }
 
 function renderOgTags(session: ParsedSession): string {
@@ -130,14 +133,14 @@ function renderOgTags(session: ParsedSession): string {
   <meta property="og:type" content="website">
   <meta property="og:title" content="${escapeHtml(truncate(session.title, 60))}">
   <meta property="og:description" content="${escapeHtml(description)}">
-  <meta property="og:site_name" content="claudereview">
+  <meta property="og:site_name" content="${DEFAULT_SITE_NAME}">
   <meta name="twitter:card" content="summary">
   <meta name="twitter:title" content="${escapeHtml(truncate(session.title, 60))}">
   <meta name="twitter:description" content="${escapeHtml(description)}">
   <meta name="theme-color" content="#0a0a0a">`;
 }
 
-function renderHeader(session: ParsedSession): string {
+function renderHeader(session: ParsedSession, baseUrl: string): string {
   // Clickable tool badges that jump to first instance
   const toolsSummary = Object.entries(session.metadata.tools)
     .sort((a, b) => b[1] - a[1])
@@ -155,11 +158,7 @@ function renderHeader(session: ParsedSession): string {
   }
 
   // Source badge (Claude Code, Codex, or Gemini)
-  const sourceBadge = session.source === 'codex'
-    ? '<span class="source-badge codex">Codex</span>'
-    : session.source === 'gemini'
-    ? '<span class="source-badge gemini">Gemini</span>'
-    : '<span class="source-badge claude">Claude</span>';
+  const sourceBadge = getSourceBadgeHtml(session.source);
 
   // Model badge for Codex
   const modelBadge = session.metadata.model
@@ -172,7 +171,7 @@ function renderHeader(session: ParsedSession): string {
   return `
   <header class="viewer-header">
     <div class="header-top">
-      <a href="https://claudereview.com" class="logo" target="_blank">
+      <a href="${baseUrl}" class="logo" target="_blank">
         <span class="logo-icon">◈</span>
         <span class="logo-text">claudereview</span>
       </a>
@@ -293,6 +292,20 @@ function renderKeyMoments(metadata: SessionMetadata): string {
 
 function basename(path: string): string {
   return path.split('/').pop() || path;
+}
+
+/**
+ * Get source badge HTML for session header
+ */
+function getSourceBadgeHtml(source: string): string {
+  switch (source) {
+    case 'codex':
+      return '<span class="source-badge codex">Codex</span>';
+    case 'gemini':
+      return '<span class="source-badge gemini">Gemini</span>';
+    default:
+      return '<span class="source-badge claude">Claude</span>';
+  }
 }
 
 function renderMessages(messages: ParsedMessage[]): string {
@@ -455,24 +468,23 @@ function formatToolSummary(name: string, input?: Record<string, unknown>): strin
   if (!input) return '';
 
   switch (name) {
-    case 'Bash':
+    case 'Bash': {
       const cmd = String(input.command || '');
       return cmd.length > 80 ? cmd.slice(0, 80) + '...' : cmd;
+    }
     case 'Read':
-      return String(input.file_path || '');
     case 'Write':
-      return String(input.file_path || '');
     case 'Edit':
       return String(input.file_path || '');
     case 'Glob':
-      return String(input.pattern || '');
     case 'Grep':
       return String(input.pattern || '');
     case 'Task':
       return String(input.description || '').slice(0, 60);
-    default:
+    default: {
       const str = JSON.stringify(input);
       return str.length > 60 ? str.slice(0, 60) + '...' : str;
+    }
   }
 }
 
@@ -1908,7 +1920,8 @@ const VIEWER_JS = `
       data.encryptedBlob,
       data.iv,
       keyOrPassword,
-      data.salt
+      data.salt,
+      { sessionId: data.id, baseUrl: data.baseUrl }
     );
 
     document.getElementById('password-prompt').classList.add('hidden');
@@ -2088,7 +2101,7 @@ const VIEWER_JS = `
 
     // Footer
     lines.push('---');
-    lines.push('*Exported from [claudereview](https://claudereview.com) on ' + new Date().toISOString().split('T')[0] + '*');
+    lines.push('*Exported from [claudereview](' + (session.baseUrl || '${DEFAULT_API_URL}') + ') on ' + new Date().toISOString().split('T')[0] + '*');
 
     return lines.join('\\n');
   }

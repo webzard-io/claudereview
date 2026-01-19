@@ -1,9 +1,24 @@
 import type { ParsedSession, ParsedMessage, SessionMetadata } from './types.ts';
+import { API_URL } from './constants.ts';
+
+/**
+ * Get human-readable source label for session
+ */
+function getSourceLabel(source: string): string {
+  switch (source) {
+    case 'codex':
+      return 'Codex CLI';
+    case 'gemini':
+      return 'Gemini CLI';
+    default:
+      return 'Claude Code';
+  }
+}
 
 /**
  * Format a session as readable Markdown text for clipboard
  */
-export function formatSessionAsMarkdown(session: ParsedSession): string {
+export function formatSessionAsMarkdown(session: ParsedSession, baseUrl = API_URL): string {
   const lines: string[] = [];
 
   // Header
@@ -13,7 +28,7 @@ export function formatSessionAsMarkdown(session: ParsedSession): string {
   // Metadata section
   lines.push('## Session Info');
   lines.push('');
-  lines.push(`- **Source**: ${session.source === 'codex' ? 'Codex CLI' : session.source === 'gemini' ? 'Gemini CLI' : 'Claude Code'}`);
+  lines.push(`- **Source**: ${getSourceLabel(session.source)}`);
   lines.push(`- **Messages**: ${session.metadata.messageCount}`);
   lines.push(`- **Duration**: ${formatDuration(session.metadata.durationSeconds)}`);
   lines.push(`- **Tools Used**: ${session.metadata.toolCount}`);
@@ -119,7 +134,7 @@ export function formatSessionAsMarkdown(session: ParsedSession): string {
 
   // Footer
   lines.push('---');
-  lines.push(`*Exported from [claudereview](https://claudereview.com) on ${new Date().toISOString().split('T')[0]}*`);
+  lines.push(`*Exported from [claudereview](${baseUrl}) on ${new Date().toISOString().split('T')[0]}*`);
 
   return lines.join('\n');
 }
@@ -225,12 +240,12 @@ function escapeMarkdown(text: string): string {
 /**
  * Format session as plain text (alternative to Markdown)
  */
-export function formatSessionAsPlainText(session: ParsedSession): string {
+export function formatSessionAsPlainText(session: ParsedSession, baseUrl = API_URL): string {
   const lines: string[] = [];
 
   // Header
   lines.push(`SESSION: ${session.title}`);
-  lines.push(`Source: ${session.source === 'codex' ? 'Codex CLI' : session.source === 'gemini' ? 'Gemini CLI' : 'Claude Code'}`);
+  lines.push(`Source: ${getSourceLabel(session.source)}`);
   lines.push(`Messages: ${session.metadata.messageCount} | Tools: ${session.metadata.toolCount} | Duration: ${formatDuration(session.metadata.durationSeconds)}`);
   lines.push('');
   lines.push('='.repeat(80));
@@ -268,7 +283,7 @@ export function formatSessionAsPlainText(session: ParsedSession): string {
   }
 
   lines.push('='.repeat(80));
-  lines.push(`Exported from claudereview.com`);
+  lines.push(`Exported from ${baseUrl.replace(/^https?:\/\//, '')}`);
 
   return lines.join('\n');
 }

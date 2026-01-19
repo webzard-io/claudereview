@@ -36,5 +36,11 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 # Drizzle migrations
 drizzle/
 
+# SQLite database
+data/
+
 # Claude Code instructions
 CLAUDE.md
+
+# Build output
+dist/

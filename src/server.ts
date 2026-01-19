@@ -11,6 +11,7 @@ import { join } from 'path';
 import { db, sessions, users, apiKeys, sessionViews, type NewSession, type Session, type User } from './db/index.ts';
 import { eq, sql, desc, count, and, gte, between } from 'drizzle-orm';
 import { decrypt, encrypt, encryptForPublic, encryptForPrivate, generateKey, deriveKey, generateSalt } from './crypto.ts';
+import { BASE_URL, SITE_NAME, SITE_HOST } from './constants.ts';
 
 const app = new Hono();
 
@@ -18,8 +19,8 @@ const app = new Hono();
 const GITHUB_CLIENT_ID = process.env.GITHUB_CLIENT_ID;
 const GITHUB_CLIENT_SECRET = process.env.GITHUB_CLIENT_SECRET;
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN; // For creating feedback issues
-const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
 const SESSION_SECRET = process.env.SESSION_SECRET || 'dev-secret-change-in-production';
+const ALLOW_INSECURE_DECRYPTION = process.env.ALLOW_INSECURE_DECRYPTION === 'true';
 
 // Maximum upload size (100MB - PostgreSQL TEXT can handle up to 1GB)
 const MAX_UPLOAD_SIZE = 100 * 1024 * 1024;
@@ -528,7 +529,7 @@ ${message}
 
 ---
 ${email ? `**Contact:** ${email}` : '_No email provided_'}
-_Submitted via claudereview.com feedback form_`;
+_Submitted via ${SITE_HOST} feedback form_`;
 
       try {
         const res = await fetch('https://api.github.com/repos/vignesh07/claudereview/issues', {
@@ -617,10 +618,9 @@ app.post('/api/upload', async (c) => {
 
     if (!db) {
       // Development mode without database - just return mock response
-      const baseUrl = process.env.BASE_URL || 'http://localhost:3000';
       return c.json({
         id,
-        url: `${baseUrl}/s/${id}`,
+        url: `${BASE_URL}/s/${id}`,
       });
     }
 
@@ -643,7 +643,7 @@ app.post('/api/upload', async (c) => {
 
     await db.insert(sessions).values(session);
 
-    const baseUrl = process.env.BASE_URL || 'https://claudereview.com';
+    const baseUrl = BASE_URL;
     return c.json({
       id,
       url: `${baseUrl}/s/${id}`,
@@ -718,6 +718,60 @@ app.get('/api/session/:id', async (c) => {
   } catch (error) {
     console.error('Get session error:', error);
     return c.json({ error: 'Failed to get session' }, 500);
+  }
+});
+
+/**
+ * Insecure fallback for intranet HTTP deployments.
+ * Sends the decryption key/password to the server and is disabled by default.
+ */
+app.post('/api/session/:id/decrypt', async (c) => {
+  if (!ALLOW_INSECURE_DECRYPTION) {
+    return c.json(
+      { error: 'Insecure decryption disabled. Set ALLOW_INSECURE_DECRYPTION=true to enable.' },
+      403
+    );
+  }
+
+  if (!db) {
+    return c.json({ error: 'Database not configured' }, 500);
+  }
+
+  const id = c.req.param('id');
+  let body: { keyOrPassword?: string };
+
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'Invalid JSON body' }, 400);
+  }
+
+  if (!body.keyOrPassword) {
+    return c.json({ error: 'Missing decryption key or password' }, 400);
+  }
+
+  try {
+    const [session] = await db.select().from(sessions).where(eq(sessions.id, id)).limit(1);
+
+    if (!session) {
+      return c.json({ error: 'Session not found' }, 404);
+    }
+
+    let decrypted: string;
+    if (session.visibility === 'private') {
+      if (!session.salt) {
+        throw new Error('Missing salt for private session');
+      }
+      const derivedKey = deriveKey(body.keyOrPassword, session.salt);
+      decrypted = decrypt(session.encryptedBlob, session.iv, derivedKey);
+    } else {
+      decrypted = decrypt(session.encryptedBlob, session.iv, body.keyOrPassword);
+    }
+
+    return c.json({ session: JSON.parse(decrypted) });
+  } catch (error) {
+    console.error('Insecure decrypt error:', error);
+    return c.json({ error: 'Failed to decrypt session' }, 401);
   }
 });
 
@@ -865,22 +919,23 @@ app.get('/api/admin/stats', requireAdminApi, async (c) => {
     }).from(sessions).orderBy(desc(sessions.createdAt)).limit(20);
 
     // Sessions per day (last 30 days)
+    // SQLite: use 'unixepoch' modifier since createdAt is stored as Unix timestamp
     const sessionsPerDay = await db.select({
-      date: sql<string>`DATE(${sessions.createdAt})`,
+      date: sql<string>`DATE(${sessions.createdAt}, 'unixepoch')`,
       count: count(),
     }).from(sessions)
       .where(gte(sessions.createdAt, daysAgo(30)))
-      .groupBy(sql`DATE(${sessions.createdAt})`)
-      .orderBy(sql`DATE(${sessions.createdAt})`);
+      .groupBy(sql`DATE(${sessions.createdAt}, 'unixepoch')`)
+      .orderBy(sql`DATE(${sessions.createdAt}, 'unixepoch')`);
 
     // Views per day (last 30 days) from sessionViews
     const viewsPerDay = await db.select({
-      date: sql<string>`DATE(${sessionViews.viewedAt})`,
+      date: sql<string>`DATE(${sessionViews.viewedAt}, 'unixepoch')`,
       count: count(),
     }).from(sessionViews)
       .where(gte(sessionViews.viewedAt, daysAgo(30)))
-      .groupBy(sql`DATE(${sessionViews.viewedAt})`)
-      .orderBy(sql`DATE(${sessionViews.viewedAt})`);
+      .groupBy(sql`DATE(${sessionViews.viewedAt}, 'unixepoch')`)
+      .orderBy(sql`DATE(${sessionViews.viewedAt}, 'unixepoch')`);
 
     // Top viewed sessions
     const topViewed = await db.select({
@@ -963,11 +1018,11 @@ function generateViewerHtml(session: Session | null, id: string): string {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${escapeHtml(title)} - claudereview</title>
+  <title>${escapeHtml(title)} - ${SITE_NAME}</title>
   <meta property="og:type" content="website">
   <meta property="og:title" content="${isPrivate ? 'Protected Session' : 'Claude Session: ' + escapeHtml(title)}">
   <meta property="og:description" content="${escapeHtml(description)}">
-  <meta property="og:site_name" content="claudereview.com">
+  <meta property="og:site_name" content="${SITE_HOST}">
   <meta name="twitter:card" content="summary">
   <style>${VIEWER_CSS}</style>
 </head>
@@ -1009,7 +1064,7 @@ function generate404Html(): string {
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Session Not Found - claudereview</title>
+  <title>Session Not Found - ${SITE_NAME}</title>
   <style>${VIEWER_CSS}</style>
 </head>
 <body>
@@ -1029,7 +1084,7 @@ function generate500Html(): string {
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Error - claudereview</title>
+  <title>Error - ${SITE_NAME}</title>
   <style>${VIEWER_CSS}</style>
 </head>
 <body>
@@ -1057,16 +1112,16 @@ function generateLandingHtml(user: User | null): string {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>claudereview — Share Claude Code, Codex & Gemini Sessions</title>
+  <title>${SITE_NAME} — Share Claude Code, Codex & Gemini Sessions</title>
   <meta name="description" content="Share your Claude Code, Codex, and Gemini CLI sessions for code review. Encrypted, beautiful viewer. Drop a link in your PR.">
-  <meta property="og:title" content="claudereview — Share Claude Code, Codex & Gemini Sessions">
+  <meta property="og:title" content="${SITE_NAME} — Share Claude Code, Codex & Gemini Sessions">
   <meta property="og:description" content="Share how the code was built, not just the final diff. Encrypted.">
   <meta property="og:type" content="website">
-  <meta property="og:image" content="https://claudereview.com/og-image.png">
+  <meta property="og:image" content="${BASE_URL}/og-image.png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:image" content="https://claudereview.com/og-image.png">
+  <meta name="twitter:image" content="${BASE_URL}/og-image.png">
   <style>${LANDING_CSS}</style>
 </head>
 <body>
@@ -1103,7 +1158,7 @@ function generateLandingHtml(user: User | null): string {
           <span class="preview-dot red"></span>
           <span class="preview-dot yellow"></span>
           <span class="preview-dot green"></span>
-          <span class="preview-title">claudereview.com/s/abc123</span>
+          <span class="preview-title">${SITE_HOST}/s/abc123</span>
         </div>
         <div class="preview-content">
           <div class="preview-message">
@@ -1166,10 +1221,10 @@ function generateLandingHtml(user: User | null): string {
       <h2>Get started in seconds</h2>
       <p class="subtitle">Install the CLI and share your first session</p>
       <div class="install-box">
-        <code>bun add -g claudereview</code>
+        <code>bun add -g smartx-claudereview</code>
         <button class="copy-btn" onclick="copyInstall(this)">Copy</button>
       </div>
-      <p class="install-alt">or npm install -g claudereview</p>
+      <p class="install-alt">or npm install -g smartx-claudereview</p>
     </section>
 
     <section class="usage-section">
@@ -1206,7 +1261,7 @@ function generateLandingHtml(user: User | null): string {
   "mcpServers": {
     "claudereview": {
       "command": "bunx",
-      "args": ["claudereview-mcp"]
+      "args": ["smartx-claudereview-mcp"]
     }
   }
 }</pre>
@@ -1218,7 +1273,7 @@ function generateLandingHtml(user: User | null): string {
           <p>Quick shortcut. Create <code>~/.claude/commands/share.md</code>:</p>
           <pre class="integration-code">Share this session.
 
-Run: bunx claudereview share --last
+Run: bunx smartx-claudereview share --last
 
 Return the URL to me.</pre>
           <p class="integration-tip">Then type <code>/share</code> in any session</p>
@@ -1299,7 +1354,7 @@ Return the URL to me.</pre>
 
     function copyInstall(btn) {
       const textarea = document.createElement('textarea');
-      textarea.value = 'bun add -g claudereview';
+      textarea.value = 'bun add -g smartx-claudereview';
       textarea.style.position = 'fixed';
       textarea.style.opacity = '0';
       document.body.appendChild(textarea);
@@ -1416,8 +1471,8 @@ function generatePrivacyHtml(user: User | null): string {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Privacy & Security - claudereview</title>
-  <meta name="description" content="How claudereview handles your data and protects your privacy.">
+  <title>Privacy & Security - ${SITE_NAME}</title>
+  <meta name="description" content="How ${SITE_NAME} handles your data and protects your privacy.">
   <style>${LANDING_CSS}
     .privacy-content {
       max-width: 800px;
@@ -1529,19 +1584,19 @@ function generatePrivacyHtml(user: User | null): string {
 
     <div class="privacy-content">
       <h1>Privacy & Security</h1>
-      <p class="subtitle">How claudereview handles your data and protects your sessions.</p>
+      <p class="subtitle">How ${SITE_NAME} handles your data and protects your sessions.</p>
 
       <h2>Overview</h2>
-      <p>claudereview is designed with privacy in mind. All sessions are encrypted before they leave your machine. However, the level of protection depends on how you choose to share:</p>
+      <p>${SITE_NAME} is designed with privacy in mind. All sessions are encrypted before they leave your machine. However, the level of protection depends on how you choose to share:</p>
 
       <div class="highlight-box">
         <h3><span class="badge green">Password-Protected</span> True End-to-End Encryption</h3>
-        <p>When you share with <code>--private "password"</code>, the encryption key is derived from your password using PBKDF2 (600,000 iterations, SHA-256). The key never leaves your machine and is never stored on the server. claudereview cannot decrypt these sessions even if I wanted to.</p>
+        <p>When you share with <code>--private "password"</code>, the encryption key is derived from your password using PBKDF2 (600,000 iterations, SHA-256). The key never leaves your machine and is never stored on the server. ${SITE_NAME} cannot decrypt these sessions even if we wanted to.</p>
       </div>
 
       <div class="highlight-box">
         <h3><span class="badge blue">Public Links</span> Encrypted at Rest</h3>
-        <p>When you share without a password, the session is encrypted with a random key. The key is embedded in the URL fragment (<code>#key=xxx</code>). For anonymous shares, the key is only in the URL. For authenticated users, claudereview stores the key so you can view your sessions from the dashboard.</p>
+        <p>When you share without a password, the session is encrypted with a random key. The key is embedded in the URL fragment (<code>#key=xxx</code>). For anonymous shares, the key is only in the URL. For authenticated users, ${SITE_NAME} stores the key so you can view your sessions from the dashboard.</p>
       </div>
 
       <h2>How Encryption Works</h2>
@@ -1583,7 +1638,7 @@ function generatePrivacyHtml(user: User | null): string {
         └───────────────────────┘      • Metadata
                                        • Key (for authenticated users only)
 
-URL: claudereview.com/s/abc123#key=xxxxx
+URL: ${SITE_HOST}/s/abc123#key=xxxxx
                                 └─────┘
                                 Fragment never sent to server</div>
 
@@ -1638,23 +1693,23 @@ URL: claudereview.com/s/abc123#key=xxxxx
         </tbody>
       </table>
 
-      <h2>Can claudereview Read Your Sessions?</h2>
+      <h2>Can ${SITE_NAME} Read Your Sessions?</h2>
 
       <ul>
-        <li><strong>Password-protected sessions:</strong> <span class="badge green">No</span> The key is derived from your password and never stored. claudereview cannot decrypt these even with database access.</li>
-        <li><strong>Public sessions (signed in):</strong> <span class="badge yellow">Technically yes</span> claudereview stores the encryption key to enable dashboard viewing. However, I do not access session content and the code is open source for you to verify.</li>
+        <li><strong>Password-protected sessions:</strong> <span class="badge green">No</span> The key is derived from your password and never stored. ${SITE_NAME} cannot decrypt these even with database access.</li>
+        <li><strong>Public sessions (signed in):</strong> <span class="badge yellow">Technically yes</span> ${SITE_NAME} stores the encryption key to enable dashboard viewing. However, session content is not accessed and the code is open source for you to verify.</li>
         <li><strong>Public sessions (anonymous):</strong> <span class="badge green">No</span> The key exists only in the URL fragment which is never sent to the server.</li>
       </ul>
 
       <h2>Recommendations</h2>
       <ul>
-        <li>Use <code>--private "password"</code> for sensitive sessions that you want to guarantee cannot be read by anyone (including me)</li>
+        <li>Use <code>--private "password"</code> for sensitive sessions that you want to guarantee cannot be read by anyone</li>
         <li>Share public links for routine code reviews where convenience matters more than maximum privacy</li>
         <li>If you lose a password for a private session, the session is unrecoverable by design</li>
       </ul>
 
       <h2>Open Source</h2>
-      <p>claudereview is open source. You can audit the code yourself:</p>
+      <p>${SITE_NAME} is open source. You can audit the code yourself:</p>
       <ul>
         <li><a href="https://github.com/vignesh07/claudereview" style="color: var(--accent);">GitHub Repository</a></li>
         <li>Self-host if you prefer complete control</li>
@@ -1714,7 +1769,7 @@ function generateDashboardHtml(user: User): string {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>My Sessions - claudereview</title>
+  <title>My Sessions - ${SITE_NAME}</title>
   <style>${DASHBOARD_CSS}</style>
 </head>
 <body>
@@ -2219,7 +2274,7 @@ function generateAdminHtml(): string {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Admin - claudereview</title>
+  <title>Admin - ${SITE_NAME}</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>◈</text></svg>">
   <style>${LANDING_CSS}
     .admin-container { max-width: 1000px; margin: 0 auto; padding: 2rem; }
@@ -5060,7 +5115,45 @@ function base64UrlDecode(str) {
   return bytes;
 }
 
-async function decryptSession(encryptedBlob, iv, keyOrPassword, salt) {
+async function decryptSession(encryptedBlob, iv, keyOrPassword, salt, options) {
+  const canUseWebCrypto = typeof crypto !== 'undefined' && crypto.subtle && window.isSecureContext;
+  if (!canUseWebCrypto) {
+    const sessionId = options && options.sessionId;
+    const baseUrl = options && options.baseUrl
+      ? options.baseUrl
+      : (window.location.origin === 'null' ? '' : window.location.origin);
+
+    if (!sessionId || !baseUrl) {
+      throw new Error('Web Crypto API unavailable and server fallback is not configured.');
+    }
+
+    const response = await fetch(baseUrl + '/api/session/' + sessionId + '/decrypt', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ keyOrPassword }),
+    });
+
+    let responseData;
+    try {
+      responseData = await response.json();
+    } catch {
+      responseData = null;
+    }
+
+    if (!response.ok) {
+      const errorMessage = responseData && responseData.error
+        ? responseData.error
+        : 'Failed to decrypt session.';
+      throw new Error(errorMessage);
+    }
+
+    if (!responseData || !responseData.session) {
+      throw new Error('Invalid server response.');
+    }
+
+    return responseData.session;
+  }
+
   let key;
   if (salt) {
     key = await deriveKeyBrowser(keyOrPassword, salt);
@@ -5128,7 +5221,8 @@ const VIEWER_SCRIPT = `
       sessionData.encryptedBlob,
       sessionData.iv,
       keyOrPassword,
-      sessionData.salt
+      sessionData.salt,
+      { sessionId: SESSION_ID, baseUrl: window.location.origin }
     );
 
     passwordPrompt.classList.add('hidden');

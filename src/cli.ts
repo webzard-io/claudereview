@@ -7,6 +7,7 @@ import { listSessions, getSession, getLastSession, parseSession, parseLastSessio
 import { renderSessionToHtml } from './renderer.ts';
 import { encryptForPublic, encryptForPrivate } from './crypto.ts';
 import { formatSessionAsMarkdown, formatSessionAsPlainText } from './text-formatter.ts';
+import { API_URL, SITE_NAME } from './constants.ts';
 
 const program = new Command();
 
@@ -23,6 +24,20 @@ const colors = {
 };
 
 const c = (color: keyof typeof colors, text: string) => `${colors[color]}${text}${colors.reset}`;
+
+/**
+ * Get formatted source badge for terminal display
+ */
+function getSourceBadge(source: string): string {
+  switch (source) {
+    case 'codex':
+      return c('green', '[Codex]');
+    case 'gemini':
+      return c('blue', '[Gemini]');
+    default:
+      return c('magenta', '[Claude]');
+  }
+}
 
 /**
  * Parse a session with git context
@@ -89,11 +104,7 @@ program
       sessions.forEach((session, index) => {
         const num = c('dim', `${index + 1}.`.padStart(4));
         const id = c('cyan', session.id.slice(0, 8));
-        const source = session.source === 'codex'
-          ? c('green', '[Codex]')
-          : session.source === 'gemini'
-          ? c('blue', '[Gemini]')
-          : c('magenta', '[Claude]');
+        const source = getSourceBadge(session.source);
         const title = session.title
           ? truncate(session.title, 45)
           : c('dim', 'Untitled');
@@ -134,6 +145,7 @@ program
       const html = renderSessionToHtml(session, {
         theme: options.light ? 'light' : 'dark',
         embed: options.embed,
+        baseUrl: API_URL,
       });
 
       // Write to temp file
@@ -182,6 +194,7 @@ program
       const renderOptions = {
         theme: options.light ? 'light' as const : 'dark' as const,
         embed: options.embed,
+        baseUrl: API_URL,
       };
 
       if (options.private) {
@@ -242,6 +255,7 @@ program
       const renderedHtml = renderSessionToHtml(session, {
         theme: 'dark',
         embed: false, // Full experience with header, theme toggle, etc.
+        baseUrl: API_URL,
       });
 
       // Create payload with both rendered HTML and metadata
@@ -274,8 +288,8 @@ program
         key = encrypted.key;
       }
 
-      // Get API URL from environment or default
-      const apiUrl = process.env.CCSHARE_API_URL || 'https://claudereview.com';
+      // Get API URL from constants (respects CCSHARE_API_URL env var)
+      const apiUrl = API_URL;
 
       // Get API key from env or config
       let apiKey = process.env.CCSHARE_API_KEY;
@@ -359,19 +373,14 @@ async function saveConfig(config: Config): Promise<void> {
   await writeFile(CONFIG_FILE, JSON.stringify(config, null, 2), { mode: 0o600 });
 }
 
-function getApiKey(): string | undefined {
-  // Environment variable takes precedence
-  return process.env.CCSHARE_API_KEY;
-}
-
 // Auth command
 program
   .command('auth')
-  .description('Authenticate with claudereview.com')
+  .description(`Authenticate with ${SITE_NAME}`)
   .option('--status', 'Check authentication status')
   .option('--logout', 'Remove saved credentials')
   .action(async (options) => {
-    const apiUrl = process.env.CCSHARE_API_URL || 'https://claudereview.com';
+    const apiUrl = API_URL;
 
     if (options.status) {
       const config = await loadConfig();
@@ -471,8 +480,8 @@ program
 
       // Format as text
       const text = options.plain
-        ? formatSessionAsPlainText(session)
-        : formatSessionAsMarkdown(session);
+        ? formatSessionAsPlainText(session, API_URL)
+        : formatSessionAsMarkdown(session, API_URL);
 
       if (options.output) {
         // Write to file

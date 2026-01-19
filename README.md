@@ -6,10 +6,10 @@ Share Claude Code, Codex CLI, and Gemini CLI sessions for code review. Encrypted
 
 ```bash
 # Install globally
-bun add -g claudereview
+bun add -g smartx-claudereview
 
 # Or run directly
-bunx claudereview
+bunx smartx-claudereview
 ```
 
 ## Usage
@@ -81,7 +81,7 @@ Share sessions directly from Claude Code, Codex, or Gemini CLI by adding to `~/.
   "mcpServers": {
     "claudereview": {
       "command": "bunx",
-      "args": ["claudereview-mcp"],
+      "args": ["smartx-claudereview-mcp"],
       "env": {
         "CCSHARE_API_KEY": "your-api-key-here"
       }
@@ -101,7 +101,7 @@ Add a quick slash command by creating `~/.claude/commands/share.md`:
 ```markdown
 Share this session using claudereview.
 
-Run: bunx claudereview share --last
+Run: bunx smartx-claudereview share --last
 
 Return the URL to me.
 ```
@@ -140,21 +140,17 @@ bun run cli list
 
 ## Environment Variables
 
-- `DATABASE_URL`: PostgreSQL connection string
+- `DATABASE_PATH`: SQLite database path (default: ./data/claudereview.db)
 - `BASE_URL`: Public URL (default: https://claudereview.com)
+- `SITE_NAME`: Site name for branding (default: claudereview)
 - `PORT`: Server port (default: 3000)
-- `CCSHARE_API_URL`: API URL for CLI (default: https://claudereview.com)
+- `CCSHARE_API_URL`: API URL for CLI (default: http://192.168.17.244:31935)
 - `CCSHARE_API_KEY`: API key for authenticated uploads
+- `ALLOW_INSECURE_DECRYPTION`: Enable server-side decryption fallback for HTTP/intranet (default: false, sends key/password to server)
 
 ## Database Setup
 
-```bash
-# Push schema to database (creates tables)
-bun run db:push
-
-# Or run migrations manually
-psql $DATABASE_URL -f drizzle/0001_make_metadata_nullable.sql
-```
+The database schema is created on startup by `src/db/index.ts`.
 
 ## Deployment
 
@@ -165,7 +161,7 @@ railway up
 ```
 
 Required Railway services:
-- PostgreSQL database
+- Persistent volume for SQLite data
 
 ## License
 
