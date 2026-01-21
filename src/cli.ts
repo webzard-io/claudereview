@@ -258,14 +258,11 @@ program
         baseUrl: API_URL,
       });
 
-      // Create payload with both rendered HTML and metadata
+      // Create payload with both rendered HTML and full session data
+      // Full session data allows server-side re-rendering when renderer changes
       const payload = JSON.stringify({
         html: renderedHtml,
-        session: {
-          id: session.id,
-          title: session.title,
-          metadata: session.metadata,
-        }
+        session: session, // Full session data for re-rendering
       });
 
       let encryptedBlob: string;

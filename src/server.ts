@@ -12,6 +12,8 @@ import { db, sessions, users, apiKeys, sessionViews, type NewSession, type Sessi
 import { eq, sql, desc, count, and, gte, between } from 'drizzle-orm';
 import { decrypt, encrypt, encryptForPublic, encryptForPrivate, generateKey, deriveKey, generateSalt } from './crypto.ts';
 import { BASE_URL, SITE_NAME, SITE_HOST } from './constants.ts';
+import { renderSessionToHtml } from './renderer.ts';
+import type { ParsedSession } from './types.ts';
 
 const app = new Hono();
 
@@ -856,6 +858,94 @@ function daysAgo(days: number): Date {
   date.setHours(0, 0, 0, 0);
   return date;
 }
+
+// Admin API: Batch refresh all sessions' HTML with latest renderer
+app.post('/api/admin/refresh-sessions', requireAdminApi, async (c) => {
+  if (!db) {
+    return c.json({ error: 'Database not configured' }, 500);
+  }
+
+  try {
+    // Get all sessions with ownerKey
+    const allSessions = await db.select().from(sessions).where(sql`${sessions.ownerKey} IS NOT NULL`);
+
+    let refreshed = 0;
+    let skipped = 0;
+    let failed = 0;
+    const errors: string[] = [];
+
+    for (const session of allSessions) {
+      try {
+        // Decrypt the blob using ownerKey
+        let decrypted: string;
+        if (session.visibility === 'private') {
+          if (!session.salt) {
+            skipped++;
+            continue;
+          }
+          const derivedKey = deriveKey(session.ownerKey!, session.salt);
+          decrypted = decrypt(session.encryptedBlob, session.iv, derivedKey);
+        } else {
+          decrypted = decrypt(session.encryptedBlob, session.iv, session.ownerKey!);
+        }
+
+        const payload = JSON.parse(decrypted);
+
+        // Check if full session data is available
+        if (!payload.session || !payload.session.messages) {
+          skipped++;
+          continue;
+        }
+
+        // Re-render HTML
+        const sessionData = payload.session as ParsedSession;
+        const newHtml = renderSessionToHtml(sessionData, {
+          theme: 'dark',
+          embed: false,
+          baseUrl: BASE_URL,
+        });
+
+        // Create new payload and re-encrypt
+        const newPayload = JSON.stringify({ html: newHtml, session: sessionData });
+        let newEncryptedBlob: string;
+        let newIv: string;
+
+        if (session.visibility === 'private') {
+          const derivedKey = deriveKey(session.ownerKey!, session.salt!);
+          const encrypted = encrypt(newPayload, derivedKey);
+          newEncryptedBlob = encrypted.ciphertext;
+          newIv = encrypted.iv;
+        } else {
+          const encrypted = encrypt(newPayload, session.ownerKey!);
+          newEncryptedBlob = encrypted.ciphertext;
+          newIv = encrypted.iv;
+        }
+
+        // Update database
+        await db.update(sessions).set({
+          encryptedBlob: newEncryptedBlob,
+          iv: newIv,
+        }).where(eq(sessions.id, session.id));
+
+        refreshed++;
+      } catch (err) {
+        failed++;
+        errors.push(`${session.id}: ${err instanceof Error ? err.message : 'Unknown error'}`);
+      }
+    }
+
+    return c.json({
+      total: allSessions.length,
+      refreshed,
+      skipped,
+      failed,
+      errors: errors.slice(0, 10),
+    });
+  } catch (error) {
+    console.error('Batch refresh error:', error);
+    return c.json({ error: 'Failed to refresh sessions' }, 500);
+  }
+});
 
 // Admin API: Get analytics
 app.get('/api/admin/stats', requireAdminApi, async (c) => {
