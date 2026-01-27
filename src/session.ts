@@ -54,16 +54,51 @@ async function listClaudeSessions(): Promise<LocalSession[]> {
         // Extract session ID from filename
         const id = file.replace('.jsonl', '');
 
-        // Try to get title from first line (summary)
+        // Try to get title from summary or first user message
         let title: string | undefined;
         try {
           const content = await readFile(filePath, 'utf-8');
-          const firstLine = content.split('\n')[0];
-          if (firstLine) {
-            const parsed = JSON.parse(firstLine);
-            if (parsed.type === 'summary' && parsed.summary) {
-              title = parsed.summary;
+          const lines = content.split('\n');
+
+          // Scan lines to find summary or first user message
+          let firstUserMessage: string | undefined;
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+              const parsed = JSON.parse(line);
+              // Prefer summary type (but skip default "New Conversation")
+              if (parsed.type === 'summary' && parsed.summary && parsed.summary !== 'New Conversation') {
+                title = parsed.summary;
+                break;
+              }
+              // Fallback to first user message
+              if (!firstUserMessage && parsed.type === 'user') {
+                const msg = parsed.message;
+                if (msg?.content) {
+                  let text: string | undefined;
+                  if (typeof msg.content === 'string') {
+                    text = msg.content;
+                  } else if (Array.isArray(msg.content)) {
+                    // Find first text block in content array
+                    const textBlock = msg.content.find(
+                      (block: { type: string; text?: string }) => block.type === 'text' && block.text
+                    );
+                    text = textBlock?.text;
+                  }
+                  if (text) {
+                    firstUserMessage = text.slice(0, 100);
+                    if (text.length > 100) firstUserMessage += '...';
+                  }
+                }
+              }
+            } catch {
+              // Skip malformed lines
             }
+          }
+
+          // Use first user message if no summary found
+          if (!title && firstUserMessage) {
+            title = firstUserMessage;
           }
         } catch {
           // Ignore errors reading title
@@ -141,16 +176,32 @@ async function listCodexSessions(): Promise<LocalSession[]> {
             const idMatch = file.match(/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\.jsonl$/i);
             const id = idMatch?.[1] ?? file.replace('.jsonl', '');
 
-            // Try to get project path (cwd) from session_meta
+            // Try to get project path (cwd) and title from session
             let projectPath = '';
             let title: string | undefined;
             try {
               const content = await readFile(filePath, 'utf-8');
-              const firstLine = content.split('\n')[0];
-              if (firstLine) {
-                const parsed = JSON.parse(firstLine);
-                if (parsed.type === 'session_meta' && parsed.payload?.cwd) {
-                  projectPath = parsed.payload.cwd;
+              const lines = content.split('\n');
+
+              for (const line of lines) {
+                if (!line.trim()) continue;
+                try {
+                  const parsed = JSON.parse(line);
+                  // Get cwd from session_meta
+                  if (parsed.type === 'session_meta' && parsed.payload?.cwd) {
+                    projectPath = parsed.payload.cwd;
+                  }
+                  // Get title from first real user message (event_msg with user_message)
+                  if (!title && parsed.type === 'event_msg' && parsed.payload?.type === 'user_message') {
+                    const msg = parsed.payload.message;
+                    if (msg && typeof msg === 'string') {
+                      title = msg.slice(0, 100);
+                      if (msg.length > 100) title += '...';
+                      break;
+                    }
+                  }
+                } catch {
+                  // Skip malformed lines
                 }
               }
             } catch {
