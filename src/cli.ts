@@ -1,13 +1,19 @@
 #!/usr/bin/env bun
 import { Command } from 'commander';
-import { writeFile, mkdir } from 'fs/promises';
-import { join } from 'path';
+import { writeFile, mkdir, readFile } from 'fs/promises';
+import { join, dirname } from 'path';
 import { homedir } from 'os';
+import { fileURLToPath } from 'url';
 import { listSessions, getSession, getLastSession, parseSession, parseLastSession, parseSessionWithGit, formatDuration, formatRelativeTime, detectGitContext } from './session.ts';
 import { renderSessionToHtml } from './renderer.ts';
 import { encryptForPublic, encryptForPrivate } from './crypto.ts';
 import { formatSessionAsMarkdown, formatSessionAsPlainText } from './text-formatter.ts';
 import { API_URL, SITE_NAME } from './constants.ts';
+
+// Read version from package.json
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const packageJson = JSON.parse(await readFile(join(__dirname, '..', 'package.json'), 'utf-8'));
+const version = packageJson.version;
 
 const program = new Command();
 
@@ -73,7 +79,7 @@ async function parseWithGitContext(sessionId?: string, last?: boolean) {
 program
   .name('ccshare')
   .description('Share Claude Code sessions for code review')
-  .version('0.1.0');
+  .version(version);
 
 // List command
 program
@@ -306,7 +312,7 @@ program
           encryptedBlob,
           iv,
           salt,
-          ownerKey: apiKey ? key : undefined, // Send key so owner can view from dashboard
+          ownerKey: visibility === 'public' ? key : undefined, // Send key for public sessions (enables admin refresh)
           visibility,
           metadata: {
             title: session.title,

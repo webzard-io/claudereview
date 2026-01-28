@@ -640,7 +640,7 @@ app.post('/api/upload', async (c) => {
       encryptedBlob: parsed.encryptedBlob,
       iv: parsed.iv,
       salt: parsed.salt || null,
-      ownerKey: userId && parsed.ownerKey ? parsed.ownerKey : null, // Only store key if authenticated
+      ownerKey: parsed.ownerKey || null, // Store key for all public sessions (enables admin refresh)
     };
 
     await db.insert(sessions).values(session);
@@ -866,8 +866,8 @@ app.post('/api/admin/refresh-sessions', requireAdminApi, async (c) => {
   }
 
   try {
-    // Get all sessions with ownerKey
-    const allSessions = await db.select().from(sessions).where(sql`${sessions.ownerKey} IS NOT NULL`);
+    // Get all sessions (public with ownerKey can be refreshed, others will be skipped)
+    const allSessions = await db.select().from(sessions);
 
     let refreshed = 0;
     let skipped = 0;
@@ -876,6 +876,12 @@ app.post('/api/admin/refresh-sessions', requireAdminApi, async (c) => {
 
     for (const session of allSessions) {
       try {
+        // Skip sessions without ownerKey (can't decrypt)
+        if (!session.ownerKey) {
+          skipped++;
+          continue;
+        }
+
         // Decrypt the blob using ownerKey
         let decrypted: string;
         if (session.visibility === 'private') {
@@ -883,10 +889,10 @@ app.post('/api/admin/refresh-sessions', requireAdminApi, async (c) => {
             skipped++;
             continue;
           }
-          const derivedKey = deriveKey(session.ownerKey!, session.salt);
+          const derivedKey = deriveKey(session.ownerKey, session.salt);
           decrypted = decrypt(session.encryptedBlob, session.iv, derivedKey);
         } else {
-          decrypted = decrypt(session.encryptedBlob, session.iv, session.ownerKey!);
+          decrypted = decrypt(session.encryptedBlob, session.iv, session.ownerKey);
         }
 
         const payload = JSON.parse(decrypted);
