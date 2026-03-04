@@ -69,16 +69,47 @@ export function parseGeminiSessionContent(content: string, sessionId: string): P
           }
         }
       } else {
-        // Regular user message
-        const userText = extractTextFromParts(msg.parts);
-        if (userText.trim()) {
-          totalChars += userText.length;
-          messages.push({
-            id: `msg-${messageIndex++}`,
-            type: 'human',
-            content: userText.trim(),
-            timestamp: session.updatedAt || new Date().toISOString(),
-          });
+        // Regular user message - may contain text and/or images
+        const textParts = msg.parts.filter(p => p.text);
+        const imageParts = msg.parts.filter(p => p.inlineData || p.fileData);
+
+        // Add text content
+        if (textParts.length > 0) {
+          const userText = textParts.map(p => p.text).join('\n');
+          if (userText.trim()) {
+            totalChars += userText.length;
+            messages.push({
+              id: `msg-${messageIndex++}`,
+              type: 'human',
+              content: userText.trim(),
+              timestamp: session.updatedAt || new Date().toISOString(),
+            });
+          }
+        }
+
+        // Add images
+        for (const part of imageParts) {
+          if (part.inlineData) {
+            messages.push({
+              id: `msg-${messageIndex++}`,
+              type: 'image',
+              content: '[Image]',
+              timestamp: session.updatedAt || new Date().toISOString(),
+              imageData: {
+                mediaType: part.inlineData.mimeType,
+                data: part.inlineData.data,
+              },
+            });
+          } else if (part.fileData) {
+            // For fileData, we can't display it directly (it's a URI)
+            // Just show a placeholder
+            messages.push({
+              id: `msg-${messageIndex++}`,
+              type: 'human',
+              content: `[Image: ${part.fileData.fileUri}]`,
+              timestamp: session.updatedAt || new Date().toISOString(),
+            });
+          }
         }
       }
     } else if (msg.role === 'model') {
