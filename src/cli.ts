@@ -313,6 +313,7 @@ program
           iv,
           salt,
           ownerKey: visibility === 'public' ? key : undefined, // Send key for public sessions (enables admin refresh)
+          rawJson: visibility === 'public' ? JSON.stringify(session) : undefined,
           visibility,
           metadata: {
             title: session.title,
@@ -336,11 +337,16 @@ program
         shareUrl += `#key=${key}`;
       }
 
+      const rawUrl = visibility === 'public' ? `${result.url.replace('/s/', '/api/session/')}/raw` : undefined;
+
       if (options.quiet) {
         console.log(shareUrl);
+        if (rawUrl) console.log(rawUrl);
       } else {
         console.log(c('green', `\n✓ Session shared!`));
-        console.log(c('bold', `\n  ${shareUrl}\n`));
+        console.log(c('bold', `\n  ${shareUrl}`));
+        if (rawUrl) console.log(c('bold', `  ${rawUrl}`));
+        console.log();
 
         if (options.private) {
           console.log(c('yellow', `  ⚠ Password required to view`));

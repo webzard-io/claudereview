@@ -575,6 +575,7 @@ const uploadSchema = z.object({
   iv: z.string().max(100),
   salt: z.string().max(100).optional(),
   ownerKey: z.string().max(100).optional(), // encryption key for owner to view later
+  rawJson: z.string().max(MAX_UPLOAD_SIZE).optional(), // unencrypted session JSON for public sessions
   visibility: z.enum(['public', 'private']),
   metadata: z.object({
     title: z.string().max(500),
@@ -641,6 +642,7 @@ app.post('/api/upload', async (c) => {
       iv: parsed.iv,
       salt: parsed.salt || null,
       ownerKey: parsed.ownerKey || null, // Store key for all public sessions (enables admin refresh)
+      rawJson: parsed.visibility === 'public' ? (parsed.rawJson || null) : null,
     };
 
     await db.insert(sessions).values(session);
@@ -775,6 +777,30 @@ app.post('/api/session/:id/decrypt', async (c) => {
     console.error('Insecure decrypt error:', error);
     return c.json({ error: 'Failed to decrypt session' }, 401);
   }
+});
+
+// API: Get raw session JSON (public sessions only)
+app.get('/api/session/:id/raw', async (c) => {
+  if (!db) {
+    return c.json({ error: 'Database not configured' }, 500);
+  }
+
+  const id = c.req.param('id');
+  const [session] = await db.select().from(sessions).where(eq(sessions.id, id)).limit(1);
+
+  if (!session) {
+    return c.json({ error: 'Session not found' }, 404);
+  }
+
+  if (session.visibility !== 'public') {
+    return c.json({ error: 'Raw JSON not available for private sessions' }, 403);
+  }
+
+  if (!session.rawJson) {
+    return c.json({ error: 'Raw JSON not available for this session' }, 404);
+  }
+
+  return c.json(JSON.parse(session.rawJson));
 });
 
 // Viewer page - serves the session viewer HTML

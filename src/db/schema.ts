@@ -23,6 +23,7 @@ export const sessions = sqliteTable('sessions', {
   iv: text('iv').notNull(), // initialization vector
   salt: text('salt'), // for private sessions (password key derivation)
   ownerKey: text('owner_key'), // encryption key for owner viewing (only stored for authenticated uploads)
+  rawJson: text('raw_json'), // unencrypted session JSON for public sessions (enables /raw endpoint)
   viewCount: integer('view_count').default(0).notNull(),
   createdAt: integer('created_at', { mode: 'timestamp' }).default(sql`(unixepoch())`).notNull(),
   expiresAt: integer('expires_at', { mode: 'timestamp' }), // optional expiration
