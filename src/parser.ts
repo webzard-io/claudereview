@@ -87,7 +87,9 @@ function processMessages(rawMessages: RawMessage[]): ParsedMessage[] {
           timestamp,
         });
       } else if (Array.isArray(raw.message.content)) {
-        // Tool result(s)
+        // Process content blocks (tool results, images, text)
+        const textParts: string[] = [];
+
         for (const block of raw.message.content) {
           if (block.type === 'tool_result') {
             const output = extractToolOutput(block, raw.toolUseResult);
@@ -100,7 +102,32 @@ function processMessages(rawMessages: RawMessage[]): ParsedMessage[] {
               toolOutput: output,
               isError: block.is_error,
             });
+          } else if (block.type === 'image' && block.source) {
+            // Image block
+            parsed.push({
+              id: `msg-${messageIndex++}`,
+              type: 'image',
+              content: '[Image]',
+              timestamp,
+              imageData: {
+                mediaType: block.source.media_type,
+                data: block.source.data,
+              },
+            });
+          } else if (block.type === 'text' && block.text) {
+            // Text block in user message
+            textParts.push(block.text);
           }
+        }
+
+        // If there were text parts, create a human message
+        if (textParts.length > 0) {
+          parsed.push({
+            id: `msg-${messageIndex++}`,
+            type: 'human',
+            content: textParts.join('\n'),
+            timestamp,
+          });
         }
       }
     } else if (raw.type === 'assistant') {
@@ -108,14 +135,12 @@ function processMessages(rawMessages: RawMessage[]): ParsedMessage[] {
       if (!Array.isArray(content)) continue;
 
       const parts: MessagePart[] = [];
-      let hasText = false;
 
       for (const block of content) {
         // Skip thinking blocks - they're internal
         if (block.type === 'thinking') continue;
 
         if (block.type === 'text' && block.text) {
-          hasText = true;
           parts.push({
             type: 'text',
             content: block.text,

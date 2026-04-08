@@ -21,7 +21,7 @@ export interface RawMessage {
 }
 
 export interface ContentBlock {
-  type: 'text' | 'thinking' | 'tool_use' | 'tool_result';
+  type: 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'image';
   text?: string;
   thinking?: string;
   name?: string;
@@ -30,6 +30,12 @@ export interface ContentBlock {
   tool_use_id?: string;
   content?: string | ContentBlock[];
   is_error?: boolean;
+  // For image type
+  source?: {
+    type: 'base64';
+    media_type: string;
+    data: string;
+  };
 }
 
 // Parsed session structure
@@ -71,7 +77,7 @@ export interface SessionMetadata {
 
 export interface ParsedMessage {
   id: string;
-  type: 'human' | 'assistant' | 'tool_call' | 'tool_result';
+  type: 'human' | 'assistant' | 'tool_call' | 'tool_result' | 'image';
   content: string;
   timestamp: string;
   // For tool_call type
@@ -83,14 +89,24 @@ export interface ParsedMessage {
   isError?: boolean;
   // For assistant type with multiple parts
   parts?: MessagePart[];
+  // For image type
+  imageData?: {
+    mediaType: string;
+    data: string;
+  };
 }
 
 export interface MessagePart {
-  type: 'text' | 'tool_call';
+  type: 'text' | 'tool_call' | 'image';
   content?: string;
   toolName?: string;
   toolInput?: Record<string, unknown>;
   toolId?: string;
+  // For image type
+  imageData?: {
+    mediaType: string;
+    data: string;
+  };
 }
 
 // Session discovery

@@ -354,6 +354,25 @@ function renderMessageGroup(group: MessageGroup, index: number): string {
 }
 
 function renderHumanMessage(message: ParsedMessage): string {
+  // Handle image messages
+  if (message.type === 'image' && message.imageData) {
+    return `
+  <div class="message human-message image-message" id="${message.id}">
+    <div class="message-gutter">
+      <span class="human-prompt">❯</span>
+    </div>
+    <div class="message-body">
+      <div class="image-container">
+        <img src="data:${message.imageData.mediaType};base64,${message.imageData.data}" alt="User uploaded image" loading="lazy" />
+      </div>
+      <div class="message-meta">
+        <span class="meta-time">${formatTime(message.timestamp)}</span>
+        <button class="copy-link-inline" data-id="${message.id}" title="Copy link">🔗</button>
+      </div>
+    </div>
+  </div>`;
+  }
+
   const content = message.content || '';
   const isLong = content.length > 500;
 
@@ -383,6 +402,8 @@ function renderAssistantItem(message: ParsedMessage): string {
       return renderToolCall(message);
     case 'tool_result':
       return renderToolResult(message);
+    case 'image':
+      return renderImageMessage(message);
     default:
       return '';
   }
@@ -464,6 +485,17 @@ function renderToolResult(message: ParsedMessage): string {
   </div>`;
 }
 
+function renderImageMessage(message: ParsedMessage): string {
+  if (!message.imageData) return '';
+
+  return `
+  <div class="assistant-image" id="${message.id}">
+    <div class="image-container">
+      <img src="data:${message.imageData.mediaType};base64,${message.imageData.data}" alt="Image" loading="lazy" />
+    </div>
+  </div>`;
+}
+
 function formatToolSummary(name: string, input?: Record<string, unknown>): string {
   if (!input) return '';
 
@@ -519,16 +551,8 @@ function detectLanguage(content: string): string {
 function formatContent(content: string): string {
   if (!content) return '';
 
-  // First escape all HTML to prevent injection
-  let escaped = escapeHtml(content);
-
-  // Replace code blocks (``` blocks) - these were escaped, so match escaped backticks
-  // Actually, since we escaped first, we need to work with the escaped version
-  // Let's do this differently - process before escaping for code blocks
-
   // Start over with a safer approach
   let result = '';
-  let remaining = content;
 
   // Extract code blocks first
   const codeBlockRegex = /```(\w+)?\n([\s\S]*?)```/g;
@@ -1181,6 +1205,36 @@ body {
 
 .copy-link-inline:hover {
   opacity: 1 !important;
+}
+
+/* ========== Image Messages ========== */
+.image-container {
+  margin: var(--space-3) 0;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+}
+
+.image-container img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  max-height: 600px;
+  object-fit: contain;
+  margin: 0 auto;
+}
+
+.image-message .image-container {
+  margin-top: 0;
+}
+
+.assistant-image {
+  margin: var(--space-3) 0;
+}
+
+.assistant-image .image-container {
+  margin: 0;
 }
 
 /* ========== Assistant Group ========== */
