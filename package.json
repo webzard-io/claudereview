@@ -1,6 +1,6 @@
 {
   "name": "smartx-claudereview",
-  "version": "0.0.3",
+  "version": "0.0.5",
   "description": "Share Claude Code, Codex, and Gemini CLI sessions for code review with encryption",
   "type": "module",
   "bin": {
