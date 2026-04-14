@@ -350,6 +350,7 @@ app.patch('/api/sessions/:id', async (c) => {
         updates.iv = encrypted.iv;
         updates.salt = encrypted.salt;
         updates.ownerKey = null; // No key storage for password-protected sessions
+        updates.rawJson = null; // Clear plaintext data when switching to private
         updates.visibility = 'private';
         // Keep metadata - owner can still see in dashboard
         // Public API hides it for private sessions
@@ -800,7 +801,11 @@ app.get('/api/session/:id/raw', async (c) => {
     return c.json({ error: 'Raw JSON not available for this session' }, 404);
   }
 
-  return c.json(JSON.parse(session.rawJson));
+  try {
+    return c.json(JSON.parse(session.rawJson));
+  } catch {
+    return c.json({ error: 'Raw JSON data is corrupted' }, 500);
+  }
 });
 
 // Viewer page - serves the session viewer HTML
