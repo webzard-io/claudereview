@@ -8,6 +8,7 @@
   },
   "files": [
     "src/**/*.ts",
+    "drizzle/**/*",
     "README.md"
   ],
   "scripts": {
@@ -16,7 +17,8 @@
     "cli": "bun run src/cli.ts",
     "db:push": "drizzle-kit push --config=drizzle.config.ts",
     "db:generate": "drizzle-kit generate --config=drizzle.config.ts",
-    "db:studio": "drizzle-kit studio --config=drizzle.config.ts"
+    "db:studio": "drizzle-kit studio --config=drizzle.config.ts",
+    "db:migrate": "bun run src/db/index.ts"
   },
   "keywords": [
     "claude",

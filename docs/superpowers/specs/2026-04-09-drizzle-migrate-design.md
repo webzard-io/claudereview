@@ -46,6 +46,15 @@ if (!existingSessionsColumns.has('raw_json')) {
 
 ### Phase 2：生成 Baseline Migration
 
+**前置：修改 `.gitignore`**
+
+当前 `.gitignore:36-37` 忽略了 `drizzle/`。必须先移除该规则，否则 migration 文件无法提交：
+
+```diff
+-# Drizzle migrations
+-drizzle/
+```
+
 **步骤**：
 
 1. 运行 `drizzle-kit generate` 在 `./drizzle/` 中生成初始 migration
@@ -55,22 +64,65 @@ if (!existingSessionsColumns.has('raw_json')) {
    - `drizzle/meta/_journal.json` — 迁移日志（记录迁移顺序和校验和）
    - `drizzle/meta/XXXX_snapshot.json` — schema 快照
 
-`meta/` 子目录至关重要：`migrate()` 通过读取 `_journal.json` 来判断哪些迁移已执行及执行顺序。缺少此文件将导致运行时错误。
+`meta/` 子目录至关重要：`migrate()` 通过读取 `_journal.json` 来判断哪些迁移已执行及执行顺序（见 `node_modules/drizzle-orm/migrator.js:6-10`）。缺少此文件将导致运行时错误。
 
 **为什么只在 baseline 中使用 `IF NOT EXISTS`**：这是针对 baseline migration 的一次性让步。Phase 1 对齐现有数据库后，baseline 对旧库是空操作，对新库是完整初始化。后续所有 migration 将使用标准的 ALTER/CREATE，不再需要 `IF NOT EXISTS`。
 
 ### Phase 3：切换到 migrate()
 
+**实现修正**：保留一段轻量兼容补列逻辑，再执行 `migrate()`。原因是 baseline migration 的 `CREATE TABLE IF NOT EXISTS` 只能覆盖“全新库”和“缺整张表”的场景，无法修复“表已存在但缺列”的旧库。
+
+**启动时 schema 断言**：兼容补列执行后，仍保留一个轻量断言，确保关键列已经对齐：
+
+```typescript
+const sessionsColumns = sqlite.query('PRAGMA table_info(sessions)').all() as Array<{ name: string }>;
+if (sessionsColumns.length > 0) {
+  const existingSessionsColumns = new Set(sessionsColumns.map((column) => column.name));
+
+  const compatibilityMigrations = [
+    { columnName: 'message_count', sql: 'ALTER TABLE sessions ADD COLUMN message_count INTEGER;' },
+    { columnName: 'tool_count', sql: 'ALTER TABLE sessions ADD COLUMN tool_count INTEGER;' },
+    { columnName: 'duration_seconds', sql: 'ALTER TABLE sessions ADD COLUMN duration_seconds INTEGER;' },
+    { columnName: 'salt', sql: 'ALTER TABLE sessions ADD COLUMN salt TEXT;' },
+    { columnName: 'owner_key', sql: 'ALTER TABLE sessions ADD COLUMN owner_key TEXT;' },
+    { columnName: 'raw_json', sql: 'ALTER TABLE sessions ADD COLUMN raw_json TEXT;' },
+    { columnName: 'view_count', sql: 'ALTER TABLE sessions ADD COLUMN view_count INTEGER DEFAULT 0 NOT NULL;' },
+  ];
+
+  for (const migration of compatibilityMigrations) {
+    if (!existingSessionsColumns.has(migration.columnName)) {
+      sqlite.exec(migration.sql);
+    }
+  }
+}
+
+const cols = sqlite.query('PRAGMA table_info(sessions)').all() as Array<{ name: string }>;
+const colNames = new Set(cols.map(c => c.name));
+const required = ['message_count', 'tool_count', 'duration_seconds', 'salt', 'owner_key', 'raw_json', 'view_count'];
+const missing = required.filter(c => !colNames.has(c));
+if (missing.length > 0) {
+  throw new Error(
+    `Schema assertion failed: sessions table is missing columns: ${missing.join(', ')}. ` +
+    'The compatibility bridge did not fully align this database.'
+  );
+}
+```
+
 **`src/db/index.ts` 变更**：
 
-删除 L27-L104（所有手写的 `CREATE TABLE` + `ALTER TABLE` 逻辑），替换为：
+删除手写的 `CREATE TABLE` bootstrap，保留 `sessions` 表的兼容补列逻辑，然后切到：
 
 ```typescript
 import { migrate } from 'drizzle-orm/bun-sqlite/migrator';
 
+// Resolve migrations folder relative to this file, not process.cwd()
+const migrationsFolder = decodeURIComponent(new URL('../../drizzle', import.meta.url).pathname);
+
 // Run migrations on startup
-migrate(db, { migrationsFolder: './drizzle' });
+migrate(db, { migrationsFolder });
 ```
+
+**注意**：`migrationsFolder` 必须使用基于 `import.meta.url` 解析的绝对路径，而非相对于 `process.cwd()` 的 `'./drizzle'`。Drizzle 内部直接将该字符串拼接为文件路径（见 `node_modules/drizzle-orm/migrator.js:4-10`），如果启动目录不是 repo root，相对路径会导致找不到 `_journal.json`。
 
 最终 `src/db/index.ts` 结构如下（省略了 mkdirSync 等辅助 import）：
 
@@ -87,26 +139,35 @@ const DATABASE_PATH = process.env.DATABASE_PATH || './data/claudereview.db';
 const sqlite = new Database(DATABASE_PATH);
 sqlite.exec('PRAGMA journal_mode = WAL;');
 
+// Compatibility bridge for pre-migrate databases
+// ... ALTER TABLE logic for legacy sessions columns ...
+
 // Create drizzle instance
 export const db = drizzle(sqlite, { schema });
 
-// Run all pending migrations on startup
-migrate(db, { migrationsFolder: './drizzle' });
+// Resolve migrations folder relative to this file, not process.cwd()
+const migrationsFolder = decodeURIComponent(new URL('../../drizzle', import.meta.url).pathname);
+migrate(db, { migrationsFolder });
+
+// Schema assertion
+// ... assertion logic ...
 
 export * from './schema.ts';
 ```
 
-**关于 import 副作用**：`migrate()` 在模块顶层执行，意味着任何 import `src/db/index.ts` 的文件都会触发迁移 — 包括 CLI 命令如 `bun run cli list`。这与当前行为一致（手写的 `CREATE TABLE IF NOT EXISTS` 也在 import 时执行），因此不是退步。但与 `CREATE TABLE IF NOT EXISTS` 的幂等静默不同，`migrate()` 在磁盘上找不到 migration 文件时会抛出异常。需确保 `drizzle/` 始终与应用一起部署。
+**关于 import 副作用**：`migrate()` 在模块顶层执行，意味着任何 import `src/db/index.ts` 的入口都会触发迁移。当前只有服务端 `src/server.ts:11` 引入了 `db/index.ts`，CLI（`src/cli.ts`）并未引入数据库模块。但未来任何新增的 `db/index.ts` 消费者都会自动触发迁移，这一点需要注意。与 `CREATE TABLE IF NOT EXISTS` 的幂等静默不同，`migrate()` 在磁盘上找不到 migration 文件时会抛出异常。需确保 `drizzle/` 始终与应用一起部署。
 
 **`Dockerfile` 变更**：
 
-当前 Dockerfile 在 builder 阶段安装构建工具（python3, make, g++）和 better-sqlite3 用于 drizzle-kit 的原生依赖。使用 migrate() 后，运行时不再需要 drizzle-kit。
+当前 Dockerfile 在 builder 阶段安装构建工具用于原生依赖编译。使用 migrate() 后，运行时不再需要 drizzle-kit。
 
 生产阶段变更：
-- **新增**：`COPY --from=builder /app/drizzle ./drizzle`（migration 文件）
-- **移除**：`COPY --from=builder /app/drizzle.config.ts ./`（运行时不再需要）
+- **新增**：`COPY --from=builder /app/drizzle ./drizzle`（migration 文件，含 `meta/` 子目录）
+- **移除**：`COPY --from=builder /app/drizzle.config.ts ./`（`Dockerfile:33`，运行时不再需要）
+- **移除**：`RUN apt-get ... nodejs ...`（`Dockerfile:26-27`，生产阶段不再需要 Node.js）
+- **移除**：builder 阶段额外的 `npm install drizzle-kit better-sqlite3`（不参与运行时，也未被后续步骤使用）
 
-builder 阶段保持不变，因为开发时仍需要 drizzle-kit。
+builder 阶段仍保留 `bun install`，因为开发和构建阶段仍需要项目依赖中的 `drizzle-kit`。
 
 ```dockerfile
 # 在生产阶段，复制 migration 文件（包含 meta/ 子目录）
@@ -123,7 +184,7 @@ drizzle-kit 保持 devDependency 不变。新增脚本：
 "db:migrate": "bun run src/db/migrate.ts"
 ```
 
-用于手动测试迁移（一个简单的 import `db/index.ts` 的脚本）。
+实现上可直接使用 `"bun run src/db/index.ts"`，因为导入该模块就会触发兼容补列和 `migrate()`。
 
 ### Phase 4：文档和流程
 
@@ -139,7 +200,7 @@ drizzle-kit 保持 devDependency 不变。新增脚本：
 > 3. Commit the `drizzle/` directory
 > 4. Deploy — migrations execute on startup
 
-**CLAUDE.md Commands 节**：补充 `db:generate` 和 `db:migrate` 说明。
+**CLAUDE.md Commands 节**：补充 `db:generate` 和 `db:migrate` 说明。注意：CLAUDE.md 当前被 `.gitignore:42-43` 忽略，仅作为本地开发参考，不会共享给团队。如需团队共享，应将命令说明写入 README.md。
 
 **后续 CI 检查**（不在本 spec 范围，记录为后续工作）：
 - 如果 `src/db/schema.ts` 有变更但 `drizzle/` 目录没有对应变更则 CI 失败。
@@ -171,7 +232,9 @@ v0.0.5（当前）  →  Phase 1 发布（修复漂移）  →  Phase 3 发布�
 |  文件                         |  变更说明                                            |
 +------------------------------+-----------------------------------------------------+
 |  src/db/index.ts             |  Phase 1: 补 raw_json 迁移; Phase 3: 替换为 migrate() |
-|  Dockerfile                  |  新增 COPY drizzle/, 移除 COPY drizzle.config.ts      |
+|  .gitignore                  |  移除 drizzle/ 忽略规则                                |
+|  Dockerfile                  |  新增 COPY drizzle/; 移除 Node.js、drizzle-tools、     |
+|                              |  db-push wrapper、drizzle.config.ts                    |
 |  package.json                |  新增 db:migrate 脚本                                 |
 |  README.md                   |  更新数据库设置章节                                    |
 |  CLAUDE.md                   |  补充 db:generate / db:migrate 命令说明               |

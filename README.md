@@ -150,7 +150,14 @@ bun run cli list
 
 ## Database Setup
 
-The database schema is created on startup by `src/db/index.ts`.
+Database migrations run automatically on server startup via `drizzle-orm/migrator`. To add schema changes:
+
+1. Edit `src/db/schema.ts`
+2. Run `bun run db:generate` to create a migration
+3. Commit the `drizzle/` directory (includes `meta/_journal.json`)
+4. Deploy — migrations execute on startup
+
+For local development, `bun run db:push` can be used for fast iteration without generating migration files.
 
 ## Deployment
 
