@@ -33,11 +33,26 @@ ccshare copy --last
 # Copy to stdout instead
 ccshare copy --last --stdout
 
+# Copy as plain text (no Markdown formatting)
+ccshare copy --last --plain
+
 # Preview the most recent session in browser
 ccshare preview --last
 
 # Export to HTML file
 ccshare export --last -o session.html
+
+# Export with password protection
+ccshare export --last --private "secret" -o session.html
+
+# Authenticate with your API key
+ccshare auth
+
+# Check authentication status
+ccshare auth --status
+
+# Remove saved credentials
+ccshare auth --logout
 ```
 
 ## Features
@@ -45,14 +60,16 @@ ccshare export --last -o session.html
 ### Security
 - **E2E Encrypted**: Sessions encrypted before upload with AES-256-GCM
 - **Key in URL Fragment**: Encryption key never sent to server (`#key=xxx`)
-- **Password Protection**: Optional PBKDF2-derived keys for private shares
+- **Password Protection**: PBKDF2 key derivation (600k iterations, SHA-256) for private shares
+- **HTTP Fallback**: Optional server-side decryption for intranet deployments without HTTPS
 
 ### Viewer
 - **TUI Aesthetic**: Beautiful terminal-style dark/light theme
 - **Search**: Full-text search with ⌘F
 - **Collapsible Outputs**: Expand/collapse tool results
 - **Syntax Highlighting**: Code blocks with language detection
-- **Diff View**: Visual diffs for file edits
+- **Diff View**: Visual unified diffs for file edits
+- **Image Support**: Inline display of images from sessions
 - **Key Moments**: Summary of files created/modified, commands run
 - **Git Context**: Links to repo, branch, and commit
 - **Deep Linking**: Link directly to specific messages
@@ -61,7 +78,19 @@ ccshare export --last -o session.html
 ### Export
 - **Self-Contained HTML**: Exported files work offline
 - **OG Meta Tags**: Rich previews when sharing links
-- **Clipboard Copy**: Copy as formatted Markdown for pasting anywhere
+- **Clipboard Copy**: Copy as formatted Markdown or plain text for pasting anywhere
+
+### Dashboard
+- **Session Management**: View, edit, delete your shared sessions
+- **Visibility Toggle**: Switch sessions between public and private (with re-encryption)
+- **API Key Management**: Generate and revoke CLI API keys
+- **View Counts**: Track how many times each session has been viewed
+
+### Admin
+- **Analytics Dashboard**: Sessions, views, users stats with time period filters
+- **Charts**: Sessions per day and views per day over last 30 days
+- **Top Viewed**: See most popular sessions
+- **Batch Refresh**: Re-render all sessions with the latest renderer
 
 ### Multi-CLI Support
 - **Claude Code**: Sessions from `~/.claude/projects/`
@@ -113,17 +142,23 @@ Then type `/share` in any session.
 ## How It Works
 
 ### Public Shares
-1. CLI encrypts session with a random key
-2. Uploads encrypted blob to claudereview.com
+1. CLI encrypts session with a random 256-bit key (AES-256-GCM)
+2. Uploads encrypted blob + ownerKey (for authenticated users) + rawJson to server
 3. Returns URL with key in fragment: `claudereview.com/s/abc123#key=xxx`
 4. The `#key=xxx` fragment is never sent to the server
-5. Browser decrypts client-side
+5. Browser decrypts client-side using Web Crypto API
+6. Authenticated users can view their sessions from the dashboard (ownerKey stored server-side)
+7. Public sessions also expose a `/api/session/:id/raw` JSON endpoint
 
 ### Private Shares
-1. CLI encrypts session with password-derived key (PBKDF2)
-2. Uploads encrypted blob + salt
+1. CLI derives key from password using PBKDF2 (600k iterations, SHA-256)
+2. Encrypts session with derived key (AES-256-GCM), uploads encrypted blob + salt
 3. Returns URL without key: `claudereview.com/s/abc123`
-4. Viewer prompts for password, derives key, decrypts
+4. Viewer prompts for password, derives key client-side, decrypts
+5. No ownerKey or rawJson stored — server cannot decrypt
+
+### HTTP/Intranet Fallback
+When `ALLOW_INSECURE_DECRYPTION=true`, the viewer falls back to server-side decryption via `POST /api/session/:id/decrypt` if Web Crypto API is unavailable (non-HTTPS contexts). This sends the key/password to the server and is disabled by default.
 
 ## Development
 
@@ -140,13 +175,25 @@ bun run cli list
 
 ## Environment Variables
 
-- `DATABASE_PATH`: SQLite database path (default: ./data/claudereview.db)
-- `BASE_URL`: Public URL (default: https://claudereview.com)
-- `SITE_NAME`: Site name for branding (default: claudereview)
-- `PORT`: Server port (default: 3000)
-- `CCSHARE_API_URL`: API URL for CLI (default: http://192.168.17.244:31935)
-- `CCSHARE_API_KEY`: API key for authenticated uploads
-- `ALLOW_INSECURE_DECRYPTION`: Enable server-side decryption fallback for HTTP/intranet (default: false, sends key/password to server)
+### Core
+- `DATABASE_PATH`: SQLite database path (default: `./data/claudereview.db`)
+- `BASE_URL`: Public URL for the server (default: `http://localhost:3000`)
+- `SITE_NAME`: Site name for branding (default: `claudereview`)
+- `PORT`: Server port (default: `3000`)
+
+### GitHub OAuth (optional)
+- `GITHUB_CLIENT_ID`: OAuth app client ID
+- `GITHUB_CLIENT_SECRET`: OAuth app client secret
+- `GITHUB_TOKEN`: Personal access token for creating feedback issues on GitHub
+
+### Authentication
+- `SESSION_SECRET`: Session signing secret (default: `dev-secret-change-in-production`)
+- `CCSHARE_API_KEY`: API key for authenticated CLI uploads (client-side)
+- `CCSHARE_API_URL`: API endpoint for CLI (default: `http://192.168.17.244:31935`)
+- `ADMIN_KEY`: Admin dashboard authentication key
+
+### Security
+- `ALLOW_INSECURE_DECRYPTION`: Enable server-side decryption fallback for HTTP/intranet deployments (default: `false`). When enabled, the key/password is sent to the server for decryption.
 
 ## Database Setup
 
@@ -157,11 +204,30 @@ Database migrations run automatically on server startup via `drizzle-orm/migrato
 3. Commit the `drizzle/` directory (includes `meta/_journal.json`)
 4. Deploy — migrations execute on startup
 
-For local development, `bun run db:push` can be used for fast iteration without generating migration files.
+Additional database commands:
+- `bun run db:push` — push schema directly for fast local iteration (no migration files)
+- `bun run db:migrate` — run migrations manually
+- `bun run db:studio` — open Drizzle Studio for visual database browsing
+
+The database uses SQLite with WAL mode enabled for better concurrent read performance.
 
 ## Deployment
 
-Deploy to Railway:
+### Docker
+
+```bash
+docker build -t claudereview .
+docker run -p 3000:3000 -v ./data:/app/data claudereview
+```
+
+### Kubernetes
+
+SQLite stores data in a local file, so for K8s deployment:
+- Use a PersistentVolumeClaim to persist `/app/data`
+- Run as single replica (SQLite doesn't support concurrent writes from multiple instances)
+- Set `DATABASE_PATH=/app/data/claudereview.db`
+
+### Railway
 
 ```bash
 railway up
