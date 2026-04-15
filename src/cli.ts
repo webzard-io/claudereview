@@ -1,10 +1,14 @@
 #!/usr/bin/env bun
 import { Command } from 'commander';
 import { writeFile, mkdir, readFile } from 'fs/promises';
-import { join, dirname } from 'path';
+import { join, dirname, resolve } from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
+import { existsSync } from 'fs';
 import { listSessions, getSession, getLastSession, parseSession, parseLastSession, parseSessionWithGit, formatDuration, formatRelativeTime, detectGitContext } from './session.ts';
+import { parseSessionFile } from './parser.ts';
+import { parseCodexSessionFile } from './codex-parser.ts';
+import { parseGeminiSessionFile } from './gemini-parser.ts';
 import { renderSessionToHtml } from './renderer.ts';
 import { encryptForPublic, encryptForPrivate } from './crypto.ts';
 import { formatSessionAsMarkdown, formatSessionAsPlainText } from './text-formatter.ts';
@@ -46,6 +50,27 @@ function getSourceBadge(source: string): string {
 }
 
 /**
+ * Parse a session file by path, auto-detecting format (Claude/Codex/Gemini)
+ */
+async function parseSessionFileByPath(filePath: string) {
+  const content = await readFile(filePath, 'utf-8');
+  const firstLine = content.split('\n').find((l: string) => l.trim());
+  if (firstLine) {
+    const parsed = JSON.parse(firstLine);
+    // Codex sessions start with session_meta
+    if (parsed.type === 'session_meta') {
+      return parseCodexSessionFile(filePath);
+    }
+    // Gemini sessions are a single JSON object with messages array
+    if (parsed.messages) {
+      return parseGeminiSessionFile(filePath);
+    }
+  }
+  // Default to Claude Code JSONL format
+  return parseSessionFile(filePath);
+}
+
+/**
  * Parse a session with git context
  */
 async function parseWithGitContext(sessionId?: string, last?: boolean) {
@@ -57,6 +82,11 @@ async function parseWithGitContext(sessionId?: string, last?: boolean) {
     if (!localSession) throw new Error('No sessions found');
     session = await parseSession(localSession.id);
     projectPath = localSession.projectPath;
+  } else if (sessionId.endsWith('.jsonl') || sessionId.endsWith('.json') || sessionId.includes('/')) {
+    // Support direct file path input
+    const filePath = resolve(sessionId);
+    if (!existsSync(filePath)) throw new Error(`File not found: ${filePath}`);
+    session = await parseSessionFileByPath(filePath);
   } else {
     const localSession = await getSession(sessionId);
     if (!localSession) throw new Error(`Session not found: ${sessionId}`);

@@ -146,7 +146,17 @@ export function parseCodexSessionContent(content: string, sessionId: string): Pa
             let isError = false;
             try {
               const parsed = JSON.parse(item.output || '{}');
-              output = parsed.output || '';
+              const rawOutput = parsed.output ?? '';
+              // output can be a string, array (MCP content blocks), or object
+              if (typeof rawOutput === 'string') {
+                output = rawOutput;
+              } else if (Array.isArray(rawOutput)) {
+                output = rawOutput
+                  .map((block: Record<string, unknown>) => block.text ?? JSON.stringify(block))
+                  .join('\n');
+              } else {
+                output = JSON.stringify(rawOutput, null, 2);
+              }
               isError = parsed.metadata?.exit_code !== 0;
             } catch {
               output = item.output || '';

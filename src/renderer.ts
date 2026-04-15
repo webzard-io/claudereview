@@ -461,7 +461,8 @@ function formatDiffHtml(oldStr: string, newStr: string): string {
 }
 
 function renderToolResult(message: ParsedMessage): string {
-  const output = message.toolOutput || message.content || '';
+  const rawOutput = message.toolOutput || message.content || '';
+  const output = typeof rawOutput === 'string' ? rawOutput : JSON.stringify(rawOutput, null, 2);
   const lines = output.split('\n');
   const lineCount = lines.length;
   const isLong = lineCount > 15;
